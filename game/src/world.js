@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v2 — procedural island world: terrain height, sea, town,
+// MERAPI AIRMAIL v3 — procedural island world: terrain height, sea, town,
 // runways, volcano, clouds and ring gates. Everything is generated in code.
 // v2: the Parangtritis Strip gets a levelled shelf and edge lights like the
 // home field, plus a small coastal settlement so the destination is a place.
@@ -7,8 +7,14 @@
 // 92%) — the old radial falloff left the runway ends buried under 40-50 m
 // hills, so a plane spawning on the runway started underground and bounced
 // itself to destruction before takeoff.
+// v3 adds PAPI glide-slope lights (GeoFS-style landing aids): a 4-light
+// array beside each threshold, red/white by glide angle vs the 3-degree
+// slope, updated live every frame from the plane's position. The approach
+// corridors are carved into the terrain so the 3-degree glide path clears
+// the hills — a plane on the slope clipped a 29 m hill 390 m out on the
+// Parangtritis final (v3 play test 4), where the slope is only 26 m.
 import * as THREE from 'three';
-import { WORLD, mulberry32, clamp } from './config.js';
+import { WORLD, PAPI, mulberry32, clamp } from './config.js';
 
 const rng = mulberry32(20261126);
 
@@ -40,6 +46,23 @@ function runwayDistance(x, z, def) {
   return Math.hypot(over, across);
 }
 
+/** How strongly (0..1) a point lies in a runway's approach corridor: the
+ *  wedge before the threshold, along the runway heading, where the 3-degree
+ *  glide path must clear the terrain. Fades out past 1000 m out and beyond
+ *  200 m across, so the cleared valley blends into the hills. */
+function approachBlend(x, z, def) {
+  const fx = Math.sin(def.heading), fz = Math.cos(def.heading);
+  const tx = def.x - fx * (def.length / 2);
+  const tz = def.z - fz * (def.length / 2);
+  const dx = x - tx, dz = z - tz;
+  const along = -(dx * fx + dz * fz); // positive while approaching
+  const across = dx * Math.cos(def.heading) - dz * Math.sin(def.heading);
+  if (along < -50 || along > 1000) return 0;
+  const alongFade = clamp((along + 50) / 100, 0, 1) * clamp((1000 - along) / 150, 0, 1);
+  const acrossFade = clamp((200 - Math.abs(across)) / 80, 0, 1);
+  return alongFade * acrossFade;
+}
+
 /** Terrain height in metres at (x, z). Shared by rendering and flight physics. */
 export function terrainHeight(x, z) {
   const r = Math.sqrt(x * x + z * z) / (WORLD.size / 2);
@@ -49,13 +72,29 @@ export function terrainHeight(x, z) {
   const dm = Math.sqrt((x - m.x) * (x - m.x) + (z - m.z) * (z - m.z));
   const cone = Math.max(0, 1 - dm / m.radius);
   const volcano = Math.pow(cone, 1.6) * m.height;
+  const h = base + volcano;
+  // Carve the approach corridors: inside a corridor the height is capped
+  // at 12 m below the 3-degree glide slope, so a plane flying the slope
+  // (or the PAPI) never meets a hill on final. The cap is blended by the
+  // corridor factor, so the valley reads as a cleared approach path.
+  let capped = h;
+  for (const def of [WORLD.runway, WORLD.strip2]) {
+    const b = approachBlend(x, z, def);
+    if (b > 0) {
+      const fx = Math.sin(def.heading), fz = Math.cos(def.heading);
+      const tx = def.x - fx * (def.length / 2);
+      const tz = def.z - fz * (def.length / 2);
+      const along = Math.max(0, -((x - tx) * fx + (z - tz) * fz));
+      const cap = Math.max(2, 6 + along * Math.tan((3 * Math.PI) / 180) - 12);
+      capped = capped * (1 - b) + Math.min(capped, cap) * b;
+    }
+  }
   // Level a capsule around each runway so the strip + apron sit on flat
   // ground (6 m) and the terrain blends back to the island beyond it.
   const shelf = clamp(1 - runwayDistance(x, z, WORLD.runway) / 260, 0, 1);
   const shelf2 = clamp(1 - runwayDistance(x, z, WORLD.strip2) / 200, 0, 1);
   const flat = Math.max(shelf, shelf2);
-  const h = base + volcano;
-  return h * (1 - flat) + 6 * flat;
+  return capped * (1 - flat) + 6 * flat;
 }
 
 /** Colour for a terrain vertex, by height and slope. */
@@ -72,6 +111,40 @@ function terrainColor(x, z, h, out) {
   const dm = Math.sqrt((x - m.x) * (x - m.x) + (z - m.z) * (z - m.z));
   if (dm < 130) out.setRGB(0.22, 0.18, 0.16);
   return out;
+}
+
+/** PAPI state for a plane approaching a field: 4 dots (1 = white, 0 = red)
+ *  by glide angle vs the 3-degree slope, plus a label for the HUD. */
+export function papiState(flight, field) {
+  const fx = Math.sin(field.heading), fz = Math.cos(field.heading);
+  const tx = field.x - fx * (field.length / 2);
+  const tz = field.z - fz * (field.length / 2);
+  const ty = 6; // runway shelf height
+  const dx = flight.x - tx, dz = flight.z - tz;
+  // along = distance still to fly to the threshold, along the runway
+  // heading: positive while approaching, negative once past it. (The
+  // first version had this sign backwards, so the PAPI read neutral for
+  // the whole approach and only lit up after the threshold — caught by
+  // the night screenshot, whose dots never left [1,1,0,0].)
+  const along = -(dx * fx + dz * fz);
+  const across = dx * Math.cos(field.heading) - dz * Math.sin(field.heading);
+  const neutral = { dots: [1, 1, 0, 0], label: '—', angleDeg: null };
+  if (along <= 0 || along > PAPI.maxRangeM || Math.abs(across) > PAPI.maxAcrossM) return neutral;
+  const angleDeg = (Math.atan2(flight.y - ty, along) * 180) / Math.PI;
+  const dev = angleDeg - PAPI.slopeDeg;
+  if (dev > 0.7) return { dots: [1, 1, 1, 1], label: 'HIGH', angleDeg };
+  if (dev > PAPI.bandDeg) return { dots: [1, 1, 1, 0], label: 'HIGH', angleDeg };
+  if (dev > -PAPI.bandDeg) return { dots: [1, 1, 0, 0], label: 'ON SLOPE', angleDeg };
+  if (dev > -0.7) return { dots: [1, 0, 0, 0], label: 'LOW', angleDeg };
+  return { dots: [0, 0, 0, 0], label: 'LOW', angleDeg };
+}
+
+/** Colour the 4 PAPI light meshes from a papiState (white = 1, red = 0). */
+export function updatePapi(meshes, state) {
+  if (!meshes) return;
+  meshes.forEach((m, i) => {
+    m.material.color.set(state.dots[i] ? 0xfff6d8 : 0xff2a1e);
+  });
 }
 
 export function buildWorld(scene) {
@@ -110,7 +183,8 @@ export function buildWorld(scene) {
   // --- Runways (dark strips with white centre line + threshold bars) ---
   const runwayMat = new THREE.MeshLambertMaterial({ color: 0x2b2f36 });
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xf5f5f0 });
-  function makeRunway(def, lit) {
+  const papi = {};
+  function makeRunway(def, lit, fieldId) {
     const g = new THREE.Group();
     const strip = new THREE.Mesh(new THREE.PlaneGeometry(def.length, def.width), runwayMat);
     strip.rotation.x = -Math.PI / 2;
@@ -139,11 +213,28 @@ export function buildWorld(scene) {
         }
       }
     }
+    // PAPI: 4 lights in a row across the runway, left of the approach end,
+    // just past the threshold — the glide-slope aid a real sim shows.
+    const papiMeshes = [];
+    const papiGeo = new THREE.BoxGeometry(5, 2.5, 3);
+    for (let i = 0; i < 4; i++) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0xfff6d8 });
+      const lamp = new THREE.Mesh(papiGeo, mat);
+      const along = -def.length / 2 + 12;
+      const across = -(def.width / 2 + 10 + i * 9);
+      const dx = Math.sin(def.heading) * along + Math.cos(def.heading) * across;
+      const dz = Math.cos(def.heading) * along - Math.sin(def.heading) * across;
+      lamp.position.set(def.x + dx, strip.position.y + 1.6, def.z + dz);
+      lamp.name = 'PAPI' + (i + 1);
+      g.add(lamp);
+      papiMeshes.push(lamp);
+    }
+    papi[fieldId] = papiMeshes;
     g.name = 'Runway';
     return g;
   }
-  group.add(makeRunway(WORLD.runway, true));
-  group.add(makeRunway(WORLD.strip2, true)); // Parangtritis is lit now — a real destination
+  group.add(makeRunway(WORLD.runway, true, 'merapi'));
+  group.add(makeRunway(WORLD.strip2, true, 'parang')); // Parangtritis is lit now — a real destination
 
   // --- Town: instanced houses with lit windows at dusk/night ---
   const houseGeo = new THREE.BoxGeometry(14, 9, 12);
@@ -239,7 +330,7 @@ export function buildWorld(scene) {
   group.add(clouds);
 
   scene.add(group);
-  return { group, clouds };
+  return { group, clouds, papi };
 }
 
 /** Ring gate positions for the ring course / race (fixed, deterministic).

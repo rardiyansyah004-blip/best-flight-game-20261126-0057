@@ -1,19 +1,25 @@
-// MERAPI AIRMAIL v2 — game loop and state machine: title, briefing, flying,
+// MERAPI AIRMAIL v3 — game loop and state machine: title, briefing, flying,
 // paused, results, logbook. Also hosts the deterministic ?shot= scenes.
 // v2: B starts a new mission, N a free gate course, L the logbook, H hides
 // the UI, I toggles instruments; missions start on their route's origin
 // field and the ring gates follow the route.
+// v3 (GeoFS material): N in flight opens the NAV chart panel, A toggles the
+// autopilot (which flies the route's gates and the 3-degree glide path),
+// Home/End trim the elevator, Delete resets trim, and PAPI lights beside
+// each threshold show the glide slope live.
 import { WORLD, MISSIONS, AIRFIELDS } from './config.js';
 import { createFlightState, stepFlight, onRunway } from './flight.js';
 import { createMission, stepMission, weatherFor, loadPilotLog, savePilotLog, medalFor, recordFlight, gateProgress } from './missions.js';
 import { createRenderer, applyLighting, updateScene, setRingStates, updatePanel, updateRings } from './render.js';
 import { buildHud, updateHud, showTitle, showBriefing, showResults, showLogbook, hideMenu } from './hud.js';
+import { buildNavPanel, updateNavPanel, autopilotInput, setApStatus } from './nav.js';
+import { papiState, updatePapi } from './world.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { stageShot } from './shots.js';
 
 const params = new URLSearchParams(location.search);
-const SHOT = params.get('shot'); // cover | cockpit | rings | night
+const SHOT = params.get('shot'); // cover | nav | rings | night
 
 const game = {
   screen: 'title', // title | briefing | play | paused | results | logbook
@@ -27,12 +33,46 @@ const game = {
   instruments: true,
   hudVisible: true,
   screenBeforeLogbook: 'title',
+  autopilot: false,   // v3: autopilot engaged (A)
+  navOpen: false,     // v3: nav chart drawer open (N in flight)
+  _glide: { dots: [1, 1, 0, 0], label: '—' }, // latest PAPI state
 };
 
 const r = createRenderer();
 const hud = buildHud();
+const nav = buildNavPanel();
 const input = createInput();
 const audio = createAudio();
+
+/** Toggle the autopilot; an optional message goes on the HUD message bar. */
+function setAutopilot(on, msg) {
+  game.autopilot = !!on;
+  setApStatus(nav, game.autopilot);
+  if (msg) hud.message.textContent = msg;
+}
+
+/** Toggle the nav chart drawer (flight only). */
+function toggleNav() {
+  game.navOpen = !game.navOpen;
+  nav.panel.style.display = game.navOpen ? 'block' : 'none';
+  if (game.navOpen) updateNavPanel(nav, game.flight, game.mission, game.weather, game.autopilot);
+}
+
+nav.apBtn.addEventListener('click', () => {
+  if (game.screen === 'play') setAutopilot(!game.autopilot);
+});
+
+/** Per-frame overlay updates shared by the live loop and the shot settle loop:
+ *  PAPI lights + glide state for the destination field, and the nav panel
+ *  when it is open. */
+function updateOverlays() {
+  const dest = game.mission ? game.mission.dest : AIRFIELDS.merapi;
+  const glide = papiState(game.flight, dest);
+  game._glide = glide;
+  updatePapi(r.world.papi[dest.id], glide);
+  nav.panel.style.display = game.navOpen ? 'block' : 'none';
+  if (game.navOpen) updateNavPanel(nav, game.flight, game.mission, game.weather, game.autopilot);
+}
 
 game.newMission = function newMission(id, opts) {
   game.missionId = id;
@@ -93,6 +133,10 @@ function backToTitle() {
   game.screen = 'title';
   game.mission = null;
   game.flight = createFlightState();
+  game.autopilot = false;
+  game.navOpen = false;
+  nav.panel.style.display = 'none';
+  setApStatus(nav, false);
   game.setWeather({ mode: 'day', gustStrength: 0.15, windSpeed: 2, rain: false });
   applyLighting(r, 'day');
   showTitle(game.log);
@@ -106,6 +150,7 @@ function openLogbook() {
 
 function finishMissionScreen() {
   game.screen = 'results';
+  setAutopilot(false);
   const m = game.mission;
   if (m.finished) {
     m.newBest = recordFlight(game.log, m);
@@ -134,7 +179,8 @@ if (SHOT) {
   const settleLoop = () => {
     updateScene(r, game.flight, game.cameraMode, 1 / 60, 0);
     updatePanel(r, game.flight);
-    updateHud(hud, game.flight, game.mission, game.cameraMode, { log: game.log, dt: 1 / 60, instruments: true });
+    updateOverlays();
+    updateHud(hud, game.flight, game.mission, game.cameraMode, { log: game.log, dt: 1 / 60, instruments: true, autopilot: game.autopilot, glide: game._glide });
     r.renderer.render(r.scene, r.camera);
     settle += 1;
     if (settle < 45) requestAnimationFrame(settleLoop);
@@ -179,12 +225,39 @@ function loop(now) {
 
   if (game.screen === 'play' && !game.paused) {
     input.poll();
-    const ctrl = {
+    // v3: nav chart (N) and autopilot (A) in flight; Home/End trim, Delete resets trim.
+    if (input.consume('KeyN')) toggleNav();
+    if (input.consume('KeyA')) setAutopilot(!game.autopilot);
+    const trimDelta = (input.consume('Home') ? 1 : 0) - (input.consume('End') ? 1 : 0);
+    const trimReset = input.consume('Delete');
+    let ctrl = {
       pitch: input.pitch, roll: input.roll, yaw: input.yaw,
       throttleDelta: input.throttleDelta, brake: input.brake,
       flapsToggle: input.consume('KeyF'),
       gearToggle: input.consume('KeyG'),
+      trimDelta, trimReset,
     };
+    // Autopilot flies the route; any stick input disconnects it, like a real AP.
+    // But NOT the A key itself: A is both the roll-left key and the AP toggle,
+    // so its own roll must not count as a manual override — otherwise the
+    // toggle would disconnect the autopilot in the same frame it engaged.
+    if (game.autopilot && game.mission && !game.mission.finished && !game.mission.failed) {
+      const stick = input.keys.ArrowUp || input.keys.KeyW || input.keys.ArrowDown || input.keys.KeyS
+        || input.keys.ArrowLeft || input.keys.ArrowRight || input.keys.KeyD
+        || input.keys.KeyQ || input.keys.KeyE
+        || Math.abs(input.lastMouseDX) > 2 || Math.abs(input.lastMouseDY) > 2;
+      if (stick) {
+        setAutopilot(false, 'AUTOPILOT OFF — manual control');
+      } else {
+        const ap = autopilotInput(game.flight, game.mission);
+        ctrl.pitch = ap.pitch;
+        ctrl.roll = ap.roll;
+        ctrl.yaw = ap.yaw;
+        ctrl.throttleDelta = ap.throttleDelta;
+        ctrl.brake = ap.brake;
+        if (ap.gearDown) game.flight.gearDown = true;
+      }
+    }
     if (input.consume('KeyC')) game.cameraMode = game.cameraMode === 'chase' ? 'cockpit' : 'chase';
     if (input.consume('KeyM')) audio.toggleMute();
     const events = stepFlight(game.flight, ctrl, dt, game.weather);
@@ -194,6 +267,10 @@ function loop(now) {
     if (events.tookOff) audio.ring();
     if (game.mission && game.mission.step > 0 && game.mission.message.includes('Gate') && !game._rang) { audio.ring(); game._rang = true; }
     if (game.flight.stalled && now - stallAlarmAt > 1200) { audio.alarm(); stallAlarmAt = now; }
+    // Autopilot off on landing, crash or mission end.
+    if (game.autopilot && (game.mission.finished || game.mission.failed || (game.flight.onGround && game.flight.speed < 5))) {
+      setAutopilot(false);
+    }
     if (game.mission && (game.mission.finished || game.mission.failed)) finishMissionScreen();
     // Ring gate colours follow mission progress (bonus kinds use bonusStep).
     if (game.mission) {
@@ -220,11 +297,12 @@ function loop(now) {
   if (game.screen === 'play' || game.screen === 'paused') {
     updateScene(r, game.flight, game.cameraMode, dt, now / 1000);
     updatePanel(r, game.flight);
-    updateHud(hud, game.flight, game.mission, game.cameraMode, { log: game.log, dt, instruments: game.instruments });
+    updateOverlays();
+    updateHud(hud, game.flight, game.mission, game.cameraMode, { log: game.log, dt, instruments: game.instruments, autopilot: game.autopilot, glide: game._glide });
     r.renderer.render(r.scene, r.camera);
   }
 }
 requestAnimationFrame(loop);
 
 // Expose a tiny debug handle for play-testing in the console.
-window.__merapi = { game, WORLD, MISSIONS, medalFor, AIRFIELDS };
+window.__merapi = { game, WORLD, MISSIONS, medalFor, AIRFIELDS, nav, setAutopilot, toggleNav };

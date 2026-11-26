@@ -3,20 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>Merapi Airmail — a 3D island flight game</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1018;
     font-family: "Segoe UI", system-ui, sans-serif; color: #eef4f8; }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  /* HUD */
+  /* HUD — v3: the top row holds 8 boxes (ALT/SPD/HDG/THR/FUEL/WIND/TRIM/AP), so the
+     boxes are slimmer and the row starts right of the mission panel. */
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  #hud-top { position: absolute; top: 12px; left: 348px;
-    display: flex; gap: 8px; }
+  #hud-top { position: absolute; top: 12px; left: 368px;
+    display: flex; gap: 6px; }
   .hud-box { background: rgba(8, 14, 22, 0.72); border: 1px solid rgba(255, 211, 77, 0.55);
-    border-radius: 8px; padding: 6px 10px; text-align: center; min-width: 84px; }
+    border-radius: 8px; padding: 6px 6px; text-align: center; min-width: 64px; }
   .hud-label { display: block; font-size: 11px; letter-spacing: 2px; color: #9fc3d8; }
-  .hud-value { display: block; font-size: 24px; font-weight: 700; font-family: monospace; color: #fff; }
+  .hud-value { display: block; font-size: 19px; font-weight: 700; font-family: monospace; color: #fff; }
   #hud-compass { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
     border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.25); }
   #hud-mission { position: absolute; top: 12px; left: 14px; background: rgba(8, 14, 22, 0.72);

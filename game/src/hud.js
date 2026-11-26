@@ -1,9 +1,12 @@
-// MERAPI AIRMAIL v2 — HUD: altitude/speed/heading, compass strip, minimap
+// MERAPI AIRMAIL v3 — HUD: altitude/speed/heading, compass strip, minimap
 // with named places, mission + route panel, approach guidance, ATC chatter,
 // analog dials (turn / attitude / VSI), gate banner; plus title / briefing /
 // results / logbook menus. The logbook shows career totals, recent flights
 // and the best per route; while flying, the mission panel shows that
 // route's best — the number to beat.
+// v3 adds GeoFS material: a TRIM box and an AUTOPILOT box in the top row,
+// and a GLIDE + PAPI row in the approach panel (the PAPI dots mirror the
+// 3D lights beside the destination threshold).
 import { MISSIONS, MEDALS, AIRFIELDS, PLACES, WIND_FROM_DEG, feet, knots, formatTime, runwayHeadingDeg, windComponents } from './config.js';
 import { distanceTo } from './flight.js';
 import { gateProgress } from './missions.js';
@@ -43,6 +46,8 @@ export function buildHud() {
       <div class="hud-box"><span class="hud-label">THROTTLE</span><span class="hud-value" id="hud-thr-v">0%</span></div>
       <div class="hud-box"><span class="hud-label">FUEL</span><span class="hud-value" id="hud-fuel-v">100%</span></div>
       <div class="hud-box"><span class="hud-label" id="hud-wind-label">WIND 250°</span><span class="hud-value" id="hud-wind-v">8 kt</span></div>
+      <div class="hud-box" style="min-width:64px"><span class="hud-label">TRIM</span><span class="hud-value" id="hud-trim-v" style="font-size:18px">+0.0</span></div>
+      <div class="hud-box" style="min-width:64px"><span class="hud-label">AUTOPILOT</span><span class="hud-value" id="hud-ap-v" style="font-size:18px">OFF</span></div>
     </div>
     <div id="hud-compass"><canvas id="compass-canvas" width="640" height="34"></canvas></div>
     <div id="hud-mission">
@@ -64,7 +69,7 @@ export function buildHud() {
     <div id="hud-warnings"></div>
     <div id="hud-message"></div>
     <canvas id="dials" width="400" height="118"></canvas>
-    <div id="hud-help">W/S pitch · A/D roll · Q/E rudder · SHIFT/CTRL throttle · F flaps · G gear · C camera · P pause · M mute · B mission · N free course · L logbook · H hide UI · I instruments</div>
+    <div id="hud-help">W/S pitch · A/D roll · Q/E rudder · SHIFT/CTRL throttle · F flaps · G gear · C camera · P pause · M mute · B mission · N nav · A autopilot · Home/End trim · L logbook · H hide UI · I instruments</div>
   `;
   return {
     root,
@@ -75,6 +80,8 @@ export function buildHud() {
     fuel: document.getElementById('hud-fuel-v'),
     wind: document.getElementById('hud-wind-v'),
     windLabel: document.getElementById('hud-wind-label'),
+    trim: document.getElementById('hud-trim-v'),
+    ap: document.getElementById('hud-ap-v'),
     compass: document.getElementById('compass-canvas'),
     missionName: document.getElementById('hud-mission-name'),
     route: document.getElementById('hud-route'),
@@ -121,8 +128,13 @@ function updateAtc(hud, mission, flight, dt) {
   hud.atcLines.innerHTML = hud.atcShown.map((l) => '<div class="atc-line">' + l + '</div>').join('');
 }
 
+/** PAPI dots as coloured spans (white = on/above, red = below). */
+function papiDotsHtml(dots) {
+  return dots.map((d) => '<span style="color:' + (d ? '#fff6d8' : '#ff2a1e') + '">●</span>').join('');
+}
+
 /** Update the HUD from flight + mission state, once per frame.
- *  opts: { log, dt, instruments, cameraMode } */
+ *  opts: { log, dt, instruments, cameraMode, autopilot, glide } */
 export function updateHud(hud, flight, mission, cameraMode, opts) {
   const o = opts || {};
   const dt = o.dt || 0.016;
@@ -136,6 +148,10 @@ export function updateHud(hud, flight, mission, cameraMode, opts) {
   const windKt = Math.round((flight.wind || 2) * 1.94384);
   hud.windLabel.textContent = 'WIND ' + WIND_FROM_DEG + '°';
   hud.wind.textContent = windKt + ' kt';
+  // Trim + autopilot (v3): trim shows the elevator trim setting, AP lights up green when engaged.
+  hud.trim.textContent = (flight.trim >= 0 ? '+' : '') + flight.trim.toFixed(1);
+  hud.ap.textContent = o.autopilot ? 'ON' : 'OFF';
+  hud.ap.style.color = o.autopilot ? '#39ff88' : '';
   hud.missionName.textContent = mission ? mission.def.num + '. ' + mission.def.name.toUpperCase() + '  ·  ' + cameraMode.toUpperCase() + ' CAM' : 'MERAPI AIRMAIL';
   hud.objective.textContent = mission ? mission.objective : '';
   hud.timer.textContent = mission ? formatTime(mission.elapsed) : '0:00';
@@ -159,18 +175,22 @@ export function updateHud(hud, flight, mission, cameraMode, opts) {
       hud.gateLine.textContent = mission.finished ? 'ROUTE COMPLETE' : 'LAND AT ' + mission.dest.name.toUpperCase();
       hud.gate.style.display = 'none';
     }
-    // Approach guidance: destination field, runway, distance, wind components.
+    // Approach guidance: destination field, runway, distance, wind components,
+    // plus the v3 glide-slope row (PAPI dots mirror the threshold lights).
     const dest = mission.dest;
     const distM = Math.round(Math.hypot(flight.x - dest.x, flight.z - dest.z));
     const rwyDeg = runwayHeadingDeg(dest);
     const wc = windComponents(rwyDeg, flight.wind || 2);
     const headTxt = wc.head >= 0 ? '+' + wc.head : String(wc.head);
+    const glide = o.glide || { dots: [1, 1, 0, 0], label: '—' };
     hud.approachBody.innerHTML =
       '<div class="ap-row"><span>FIELD</span><b>' + dest.name + '</b></div>' +
       '<div class="ap-row"><span>RUNWAY</span><b>' + dest.rwy + ' · ' + String(rwyDeg).padStart(3, '0') + '°</b></div>' +
       '<div class="ap-row"><span>DISTANCE</span><b>' + (distM >= 1000 ? (distM / 1000).toFixed(1) + ' km' : distM + ' m') + '</b></div>' +
       '<div class="ap-row"><span>HEADWIND</span><b>' + headTxt + ' kt</b></div>' +
-      '<div class="ap-row"><span>CROSSWIND</span><b>' + wc.cross + ' kt ' + wc.crossSide + '</b></div>';
+      '<div class="ap-row"><span>CROSSWIND</span><b>' + wc.cross + ' kt ' + wc.crossSide + '</b></div>' +
+      '<div class="ap-row"><span>GLIDE</span><b>' + glide.label + '</b></div>' +
+      '<div class="ap-row"><span>PAPI</span><b>' + papiDotsHtml(glide.dots) + '</b></div>';
   } else {
     hud.route.textContent = '';
     hud.best.textContent = '';
@@ -358,7 +378,8 @@ export function showTitle(log) {
       <div class="missions">${rows}</div>
       <p class="howto"><b>B</b> new mission · <b>N</b> free gate course · <b>L</b> logbook · <b>H</b> hide UI · <b>I</b> instruments · <b>C</b> camera<br>
       W/S pitch · A/D roll · Q/E rudder · SHIFT/CTRL throttle · F flaps · G gear · P pause · M mute<br>
-      Every route flies origin → numbered gates → destination field. Landings are scored; the logbook keeps your best per route.</p>
+      Every route flies origin → numbered gates → destination field. Landings are scored; the logbook keeps your best per route.<br>
+      In flight: <b>N</b> nav chart · <b>A</b> autopilot · <b>Home/End</b> elevator trim · PAPI lights guide the glide slope.</p>
       <button class="big-btn secondary" id="logbook-btn">LOGBOOK (L)</button>
     </div>`;
   menu.style.display = 'flex';

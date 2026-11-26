@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v2 — deterministic screenshot scenes. Each scene flies the
+// MERAPI AIRMAIL v3 — deterministic screenshot scenes. Each scene flies the
 // real flight model forward from a fixed start with a simple autopilot, so
 // the frame is what real play looks like and the same seed gives the same frame.
 // v2 recomposition: the next numbered gate sits DEAD AHEAD of the plane with
@@ -7,6 +7,10 @@
 // Shot messages are kept SHORT so the message bar never covers the gate.
 // The plane flies slightly BELOW the gate centre so the ring stays fully
 // visible above the fuselage instead of hiding behind it.
+// v3: the golden-hour cockpit scene is replaced by the NAV scene — the nav
+// chart drawer open over the chase view with the autopilot engaged. (The
+// night scene still covers the cockpit-with-instruments-lit frame.) PAPI
+// lights now show on the night final.
 import { WORLD, AIRFIELDS } from './config.js';
 import { createFlightState, stepFlight } from './flight.js';
 import { objectiveText } from './missions.js';
@@ -59,7 +63,7 @@ function finishStage(game) {
 
 /**
  * Stage a named scene and return the view + mission to display.
- * Scenes: cover | cockpit | rings | night.
+ * Scenes: cover | nav | rings | night.
  */
 export function stageShot(name, game) {
   const flight = game.flight;
@@ -67,23 +71,29 @@ export function stageShot(name, game) {
   const golden = { mode: 'golden', gustStrength: 0.2, windSpeed: 4, rain: false };
   const night = { mode: 'night', gustStrength: 0.25, windSpeed: 3, rain: false };
 
-  if (name === 'cockpit') {
-    // Final approach to Parangtritis Strip, cockpit view, instruments lit,
-    // next mail gate dead ahead on the approach path.
+  if (name === 'nav') {
+    // Nav chart drawer open over the chase view, autopilot engaged, en route
+    // on the mail run: gate 3 dead ahead, the island chart + METAR + AP
+    // status in the drawer on the right, full HUD elsewhere in frame.
     game.mission = game.newMission('airmail');
     game.mission.started = true;
-    game.mission.step = 7; // last gate sits just short of the strip
-    game.mission.gates.slice(0, 7).forEach((g) => { g.done = true; });
-    game.mission.elapsed = 196; game.mission.score = 1150;
+    game.mission.step = 2;
+    game.mission.gates.slice(0, 2).forEach((g) => { g.done = true; });
+    game.mission.elapsed = 38; game.mission.score = 300;
     game.mission.routeBest = { time: 214, score: 1240, landingScore: 88 };
-    game.mission.message = 'Final gate — Parangtritis Strip ahead, gear down.';
-    const gate = game.mission.gates[7];
-    flight.x = gate.x - 260; flight.z = gate.z - 420;
-    lineUpOnGate(flight, gate, 300, 0);
-    flight.y = 165; flight.speed = 52; flight.throttle = 0.45; flight.onGround = false;
-    flight.flaps = 1; flight.gearDown = true;
-    game.setCameraMode('cockpit');
+    game.mission.message = 'Nav chart open — autopilot flying gate 3.';
+    const gate = game.mission.gates[2];
+    flight.x = gate.x - 200; flight.z = gate.z - 300;
+    lineUpOnGate(flight, gate, 260, 25);
+    flight.speed = 64; flight.throttle = 0.85; flight.onGround = false;
+    game.setCameraMode('chase');
     game.setWeather(golden);
+    game.navOpen = true;
+    game.autopilot = true;
+    runSteps(flight, golden, 0.5, (f) => steerTo(f, gate.x, gate.y, gate.z, 64));
+    lineUpOnGate(flight, gate, 260, 25); // re-centre after the autopilot drift
+    flight.speed = 64; flight.pitch = 0.02; flight.roll = 0.05;
+    game.autopilot = true; // keep AP shown as engaged for the staged frame
     return finishStage(game);
   }
   if (name === 'rings') {
@@ -110,7 +120,8 @@ export function stageShot(name, game) {
   }
   if (name === 'night') {
     // Night landing: short final to the lit Merapi Field runway, gear down,
-    // town lights below, approach panel calling RWY 09 at ~400 m.
+    // town lights below, approach panel calling RWY 09 at ~400 m, PAPI
+    // lights beside the threshold showing the glide slope.
     // (night is a bonus-gate kind: progress lives in bonusStep, not step.)
     flight.x = WORLD.runway.x + 40; flight.z = WORLD.runway.z - 400;
     flight.y = 80; flight.heading = 0; flight.pitch = -0.08; flight.roll = 0;
@@ -156,8 +167,11 @@ export { createFlightState };
  *   260 m dead ahead; the chase camera centres the plane and the gate,
  *   the approach panel names Parangtritis Strip RWY 04 beyond it, and the
  *   dials row + minimap + ATC box are all in frame at 1280x720.
- * - cockpit: final approach to Parangtritis, gate 8 ahead, panel lit.
+ * - nav (v3): same en-route framing as cover, with the nav chart drawer
+ *   open on the right (island chart + METAR + AP ON) — the gate stays
+ *   dead ahead in the left two-thirds of the frame.
  * - rings: gate 2 of the ring route dead ahead over the bay, gates 3-5
  *   visible in sequence beyond it across the island.
- * - night: short final to the lit Merapi Field runway, gear + flaps down.
+ * - night: short final to the lit Merapi Field runway, gear + flaps down,
+ *   PAPI lights beside the threshold.
  */

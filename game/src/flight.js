@@ -1,10 +1,14 @@
-// MERAPI AIRMAIL v2 — arcade flight model: pitch/roll/yaw, throttle, flaps,
+// MERAPI AIRMAIL v3 — arcade flight model: pitch/roll/yaw, throttle, flaps,
 // gear, stall and spin, wind gusts, terrain and sea collision, landing check.
 // v2 records every touchdown (vertical speed, centreline error, approach
 // speed) so the debrief can score the landing, and only counts a touchdown
 // as HARD after a real airborne descent (airTime) — rolling off a bump at
 // taxi speed no longer destroys the plane.
-import { PLANE, WORLD, AIRFIELDS, clamp, wrapAngle } from './config.js';
+// v3 adds elevator trim (GeoFS Home/End): trim offsets the pitch target so
+// the plane holds attitude hands-off; Delete resets it. The wind push only
+// applies in the air — a parked plane must not slide across the ground
+// (and drift sideways during the takeoff roll).
+import { PLANE, WORLD, AIRFIELDS, TRIM_STEP, clamp, wrapAngle } from './config.js';
 import { terrainHeight } from './world.js';
 
 export function createFlightState() {
@@ -12,7 +16,7 @@ export function createFlightState() {
     x: WORLD.runway.x, y: 8, z: WORLD.runway.z + WORLD.runway.length / 2 - 30,
     heading: 0, pitch: 0, roll: 0,
     speed: 0, throttle: 0, flaps: 0, gearDown: true,
-    fuel: 100, damage: 0,
+    fuel: 100, damage: 0, trim: 0,
     onGround: true, crashed: false, landed: false,
     verticalSpeed: 0, stalled: false, spinning: false,
     wind: 0, gust: 0, time: 0, airTime: 0,
@@ -39,7 +43,8 @@ export function fieldUnder(s) {
 /**
  * Advance the flight model one step (dt seconds).
  * input: { pitch: -1..1 (stick back = climb), roll: -1..1, yaw: -1..1,
- *          throttleDelta, flapsToggle, gearToggle, brake }
+ *          throttleDelta, flapsToggle, gearToggle, brake,
+ *          trimDelta: -1 | 0 | 1 (Home/End presses), trimReset }
  * Returns events: { tookOff, touchedDown, crashed, stalled }.
  */
 export function stepFlight(s, input, dt, weather) {
@@ -51,6 +56,9 @@ export function stepFlight(s, input, dt, weather) {
   s.throttle = clamp(s.throttle + (input.throttleDelta || 0) * dt * 0.6, 0, 1);
   if (input.flapsToggle) s.flaps = s.flaps > 0.5 ? 0 : 1;
   if (input.gearToggle) s.gearDown = !s.gearDown;
+  // Elevator trim: Home trims nose-up, End nose-down, Delete resets.
+  if (input.trimReset) s.trim = 0;
+  else if (input.trimDelta) s.trim = clamp(s.trim + input.trimDelta * TRIM_STEP, -1, 1);
 
   // Wind gusts (weather.gustStrength 0..1, deterministic-ish via time).
   const gustPhase = Math.sin(s.time * 0.9) * 0.5 + Math.sin(s.time * 2.3) * 0.5;
@@ -63,17 +71,22 @@ export function stepFlight(s, input, dt, weather) {
   s.speed = Math.max(0, s.speed + accel * dt);
   if (s.speed < 0.5 && s.onGround && s.throttle < 0.05) s.speed = 0;
 
-  // Roll follows stick; bank turns the heading.
+  // Roll follows stick; bank turns the heading. Positive roll banks the
+  // plane right (the mesh rotates the same way) and must turn it right:
+  // heading grows toward east. (The first version had a minus here, so the
+  // plane banked right while turning LEFT — the autopilot could never
+  // converge on a gate and circled instead. Caught by the v3 play test:
+  // 60 s of AP, zero gates passed, and the autoland never closed in.)
   const targetRoll = clamp((input.roll || 0) * 1.1, -1.1, 1.1);
   s.roll += (targetRoll - s.roll) * Math.min(1, dt * 3.5);
-  const turn = -Math.sin(s.roll) * PLANE.turnRate * clamp(s.speed / PLANE.cruiseSpeed, 0.25, 1);
+  const turn = Math.sin(s.roll) * PLANE.turnRate * clamp(s.speed / PLANE.cruiseSpeed, 0.25, 1);
   s.heading = wrapAngle(s.heading + turn * dt + (input.yaw || 0) * 0.15 * dt);
 
-  // Pitch follows stick, limited by speed; stall below stall speed.
+  // Pitch follows stick + trim, limited by speed; stall below stall speed.
   const stallSpeed = PLANE.stallSpeed * (1 - s.flaps * 0.25);
   s.stalled = !s.onGround && s.speed < stallSpeed;
   if (s.stalled) events.stalled = true;
-  const pitchTarget = clamp((input.pitch || 0) * 0.45, -0.45, 0.45);
+  const pitchTarget = clamp((input.pitch || 0) * 0.45 + s.trim * 0.3, -0.45, 0.45);
   const pitchAuthority = clamp(s.speed / PLANE.cruiseSpeed, 0.2, 1);
   s.pitch += (pitchTarget * pitchAuthority - s.pitch) * Math.min(1, dt * 2.5);
   if (s.stalled) {
@@ -93,8 +106,11 @@ export function stepFlight(s, input, dt, weather) {
   const fx = Math.sin(s.heading), fz = Math.cos(s.heading);
   s.x += fx * s.speed * dt;
   s.z += fz * s.speed * dt;
-  // Wind pushes the plane sideways (crosswind component).
-  s.x += Math.cos(s.heading) * s.wind * dt * 0.3;
+  // Wind pushes the plane sideways — in the air only. A parked plane must
+  // not slide across the ground (v3 play test 4: the stopped plane drifted
+  // 17 m downhill behind the debrief), and the same push drifted the plane
+  // sideways during the takeoff roll.
+  if (!s.onGround) s.x += Math.cos(s.heading) * s.wind * dt * 0.3;
 
   // Fuel burn.
   s.fuel = Math.max(0, s.fuel - s.throttle * PLANE.fuelBurn * dt);
@@ -147,9 +163,13 @@ export function stepFlight(s, input, dt, weather) {
   if (ground < 2 && s.y < 1.5 && !s.onGround) {
     s.crashed = true; events.crashed = true; s.damage = 100;
   }
-  // World bounds: turn the plane gently back.
+  // World bounds: turn the plane gently back toward the island. The rate
+  // must stay well below the plane's own turn authority (0.55 rad/s), or
+  // it overpowers the autopilot: the first version spun at 0.63 rad/s, so
+  // a plane placed 2 km out on final just orbited out there forever while
+  // the AP — max turn 0.31 rad/s — could never win the fight.
   if (Math.abs(s.x) > 2000 || Math.abs(s.z) > 2000) {
-    s.heading = wrapAngle(s.heading + Math.PI * dt * 0.2);
+    s.heading = wrapAngle(s.heading + Math.PI * dt * 0.05);
   }
   return events;
 }

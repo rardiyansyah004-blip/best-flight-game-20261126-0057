@@ -18,9 +18,14 @@ Then open http://localhost:8080 in desktop Chrome — or open `game/index.html` 
 
 - **W/S** pitch · **A/D** roll · **Q/E** rudder · **SHIFT/CTRL** throttle
 - **F** flaps · **G** landing gear · **C** cockpit/chase camera · **P** pause · **M** mute
-- **B** new mission · **N** free gate course · **L** pilot logbook · **H** hide UI · **I** instruments toggle
+- **B** new mission · **N** free gate course (title) / nav chart (in flight) · **A** autopilot · **L** pilot logbook · **H** hide UI · **I** instruments toggle
+- **Home/End** elevator trim · **Delete** reset trim
 
-The HUD shows altitude, speed, heading, throttle, fuel and wind, with a compass strip, a minimap with named places, the mission panel (route, next gate + live distance, route best to beat), an approach guidance panel (destination field, runway, distance, headwind/crosswind), ATC radio chatter, and — in chase view — an analog dials row (turn coordinator, attitude, VSI). The cockpit view has a live 3D instrument panel (altimeter, airspeed, heading, throttle, fuel, attitude). All sound — engine hum, wind, ring chimes, touchdown thud — is synthesised with WebAudio.
+The HUD shows altitude, speed, heading, throttle, fuel and wind, with a compass strip, a minimap with named places, the mission panel (route, next gate + live distance, route best to beat), an approach guidance panel (destination field, runway, distance, headwind/crosswind, glide slope + PAPI dots), ATC radio chatter, and — in chase view — an analog dials row (turn coordinator, attitude, VSI). The cockpit view has a live 3D instrument panel (altimeter, airspeed, heading, throttle, fuel, attitude). All sound — engine hum, wind, ring chimes, touchdown thud — is synthesised with WebAudio.
+
+## v3 — GeoFS material
+
+In the spirit of GeoFS (the free browser flight sim): press **N** in flight to open the nav chart — a live island chart with both airfields, numbered route gates, your plane, wind and a METAR weather report. Press **A** for the autopilot: it flies the route's gates and the 3-degree glide path to the destination threshold (any stick input disconnects it). Both runways have **PAPI glide-slope lights** beside the threshold (four white = too high, two white two red = on slope, four red = too low), mirrored in the approach panel. **Home/End** trim the elevator so the plane holds attitude hands-off. Everything is generated in code — the game makes no network requests.
 
 ## Layout
 

@@ -1,7 +1,9 @@
-// MERAPI AIRMAIL v2 — shared constants, airfields, routes and tuning.
+// MERAPI AIRMAIL v3 — shared constants, airfields, routes and tuning.
 // v2 reworks the 8 missions into delivery ROUTES: every flight takes off
 // from an origin field, flies 6-8 numbered gates, and lands at a destination
 // field. All numbers are original design values for this game.
+// v3 adds GeoFS material: a navigation panel with autopilot (A), PAPI
+// glide-slope lights on both runways, and elevator trim (Home/End).
 export const WORLD = {
   size: 4200,            // island spans -2100..2100 in x and z
   seaLevel: 0,
@@ -43,6 +45,24 @@ export const PLANE = {
   fuelBurn: 0.55,        // % per second at full throttle
   fuelCapacity: 100,
 };
+
+/** Autopilot tuning (v3, GeoFS-style A): gentle bank, altitude hold. */
+export const AP = {
+  cruiseSpeed: 62,       // m/s the autopilot holds en route
+  bankLimit: 0.55,       // rad of roll the AP will command
+  glideSlopeDeg: 3,      // degrees: the final-approach path the AP flies
+};
+
+/** PAPI glide-slope tuning (v3): a 3-degree slope to the threshold. */
+export const PAPI = {
+  slopeDeg: 3,           // ideal glide angle
+  bandDeg: 0.35,         // half-width of the "on slope" band
+  maxRangeM: 2000,       // PAPI reads only inside this distance
+  maxAcrossM: 400,       // ...and roughly aligned with the runway
+};
+
+/** Elevator trim (v3, GeoFS Home/End): one press = 0.1 of trim. */
+export const TRIM_STEP = 0.1;
 
 export const MISSIONS = [
   { id: 'takeoff', num: 1, name: 'First Solo', kind: 'takeoff',
