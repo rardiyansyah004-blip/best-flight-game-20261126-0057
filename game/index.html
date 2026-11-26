@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merapi Airmail — a 3D island flight game</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1018;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #eef4f8; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* HUD */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  #hud-top { position: absolute; top: 12px; left: 372px;
+    display: flex; gap: 10px; }
+  .hud-box { background: rgba(8, 14, 22, 0.72); border: 1px solid rgba(255, 211, 77, 0.55);
+    border-radius: 8px; padding: 6px 14px; text-align: center; min-width: 92px; }
+  .hud-label { display: block; font-size: 11px; letter-spacing: 2px; color: #9fc3d8; }
+  .hud-value { display: block; font-size: 24px; font-weight: 700; font-family: monospace; color: #fff; }
+  #hud-compass { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
+    border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.25); }
+  #hud-mission { position: absolute; top: 12px; left: 14px; background: rgba(8, 14, 22, 0.72);
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px 14px; max-width: 340px; }
+  #hud-mission-name { font-weight: 800; letter-spacing: 1px; color: #ffd34d; font-size: 15px; }
+  #hud-objective { font-size: 14px; margin-top: 4px; }
+  #hud-timer, #hud-score { font-family: monospace; font-size: 15px; margin-top: 2px; color: #cfe3ee; }
+  #minimap { position: absolute; right: 14px; top: 12px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.35); background: rgba(8,14,22,0.5); }
+  #hud-warnings { position: absolute; top: 130px; left: 50%; transform: translateX(-50%);
+    color: #ff5a4e; font-weight: 800; font-size: 22px; letter-spacing: 2px;
+    text-shadow: 0 0 12px rgba(255, 60, 40, 0.8); display: none; }
+  #hud-message { position: absolute; top: 122px; left: 50%; transform: translateX(-50%);
+    background: rgba(8, 14, 22, 0.72); border-radius: 8px; padding: 8px 18px; font-size: 16px;
+    max-width: 80%; text-align: center; }
+  #hud-help { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: rgba(238, 244, 248, 0.75); background: rgba(8,14,22,0.55);
+    padding: 5px 12px; border-radius: 6px; white-space: nowrap; }
+  /* Menus */
+  #menu { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center;
+    justify-content: center; background: rgba(6, 10, 16, 0.55); overflow-y: auto; }
+  .panel { background: rgba(10, 18, 28, 0.92); border: 1px solid #ffd34d; border-radius: 14px;
+    padding: 28px 34px; max-width: 760px; width: 92%; text-align: center;
+    box-shadow: 0 12px 60px rgba(0,0,0,0.6); margin: 20px auto; }
+  .panel h1 { margin: 0; font-size: 46px; letter-spacing: 4px; color: #ffd34d; }
+  .panel h2 { margin: 0 0 10px; font-size: 30px; letter-spacing: 2px; color: #ffd34d; }
+  .subtitle { font-size: 17px; color: #cfe3ee; margin: 8px 0 2px; }
+  .tagline { font-style: italic; color: #9fc3d8; margin: 2px 0 18px; }
+  .brief { font-size: 16px; line-height: 1.5; text-align: left; }
+  .medals { font-family: monospace; font-size: 15px; color: #ffd34d; margin: 14px 0; }
+  .howto { font-size: 13px; color: #9fc3d8; margin-top: 16px; line-height: 1.6; }
+  .missions { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+  .mission-btn { display: grid; grid-template-columns: 34px 1fr 1.4fr auto; gap: 12px; align-items: center;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.25); color: #eef4f8;
+    border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 15px; width: 100%; }
+  .mission-btn:hover { background: rgba(255, 211, 77, 0.18); border-color: #ffd34d; }
+  .m-num { font-family: monospace; font-weight: 800; color: #ffd34d; font-size: 18px; }
+  .m-name { font-weight: 700; }
+  .m-par { color: #cfe3ee; font-size: 13px; }
+  .m-best { font-family: monospace; font-size: 13px; text-align: right; }
+  .big-btn { background: #ffd34d; color: #1a1405; border: none; border-radius: 8px;
+    font-size: 18px; font-weight: 800; padding: 12px 28px; cursor: pointer; margin: 6px; letter-spacing: 1px; }
+  .big-btn.secondary { background: transparent; color: #eef4f8; border: 1px solid rgba(255,255,255,0.5); }
+  .big-btn:hover { filter: brightness(1.1); }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.min.js" } }
+</script>
+</head>
+<body>
+<canvas id="game" aria-label="Merapi Airmail: a 3D island flight game. Fly the mail plane through rings, deliver parcels, land on the runway."></canvas>
+<p id="status" role="status" aria-live="polite"></p>
+<div id="hud"></div>
+<div id="menu"></div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
