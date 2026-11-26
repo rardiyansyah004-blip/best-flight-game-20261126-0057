@@ -1,5 +1,12 @@
-// MERAPI AIRMAIL — procedural island world: terrain height, sea, town,
+// MERAPI AIRMAIL v2 — procedural island world: terrain height, sea, town,
 // runways, volcano, clouds and ring gates. Everything is generated in code.
+// v2: the Parangtritis Strip gets a levelled shelf and edge lights like the
+// home field, plus a small coastal settlement so the destination is a place.
+// v2 FIX (found in play-testing): the runway shelves are levelled as
+// CAPSULES around each strip and flattened to a TRUE 6 m (full blend, not
+// 92%) — the old radial falloff left the runway ends buried under 40-50 m
+// hills, so a plane spawning on the runway started underground and bounced
+// itself to destruction before takeoff.
 import * as THREE from 'three';
 import { WORLD, mulberry32, clamp } from './config.js';
 
@@ -24,6 +31,15 @@ function fbm(x, z) {
     + noise2(x * 0.013 + 13, z * 0.013 + 9) * 0.12;
 }
 
+/** Distance (m) from (x, z) to a runway strip's centreline segment. */
+function runwayDistance(x, z, def) {
+  const dx = x - def.x, dz = z - def.z;
+  const along = dx * Math.sin(def.heading) + dz * Math.cos(def.heading);
+  const across = dx * Math.cos(def.heading) - dz * Math.sin(def.heading);
+  const over = Math.max(0, Math.abs(along) - def.length / 2);
+  return Math.hypot(over, across);
+}
+
 /** Terrain height in metres at (x, z). Shared by rendering and flight physics. */
 export function terrainHeight(x, z) {
   const r = Math.sqrt(x * x + z * z) / (WORLD.size / 2);
@@ -33,11 +49,13 @@ export function terrainHeight(x, z) {
   const dm = Math.sqrt((x - m.x) * (x - m.x) + (z - m.z) * (z - m.z));
   const cone = Math.max(0, 1 - dm / m.radius);
   const volcano = Math.pow(cone, 1.6) * m.height;
-  // Flatten the town + runway shelf so the airport sits on level ground.
-  const dr = Math.sqrt((x - WORLD.runway.x) * (x - WORLD.runway.x) + (z - WORLD.runway.z) * (z - WORLD.runway.z));
-  const shelf = clamp(1 - dr / 700, 0, 1);
+  // Level a capsule around each runway so the strip + apron sit on flat
+  // ground (6 m) and the terrain blends back to the island beyond it.
+  const shelf = clamp(1 - runwayDistance(x, z, WORLD.runway) / 260, 0, 1);
+  const shelf2 = clamp(1 - runwayDistance(x, z, WORLD.strip2) / 200, 0, 1);
+  const flat = Math.max(shelf, shelf2);
   const h = base + volcano;
-  return h * (1 - shelf * 0.92) + 6 * shelf;
+  return h * (1 - flat) + 6 * flat;
 }
 
 /** Colour for a terrain vertex, by height and slope. */
@@ -125,7 +143,7 @@ export function buildWorld(scene) {
     return g;
   }
   group.add(makeRunway(WORLD.runway, true));
-  group.add(makeRunway(WORLD.strip2, false));
+  group.add(makeRunway(WORLD.strip2, true)); // Parangtritis is lit now — a real destination
 
   // --- Town: instanced houses with lit windows at dusk/night ---
   const houseGeo = new THREE.BoxGeometry(14, 9, 12);
@@ -134,15 +152,13 @@ export function buildWorld(scene) {
   const winMat = new THREE.MeshBasicMaterial({ color: 0xffd27a });
   const town = new THREE.Group();
   town.name = 'Town';
-  for (let i = 0; i < 90; i++) {
-    const tx = WORLD.town.x + (rng() - 0.5) * 520;
-    const tz = WORLD.town.z + (rng() - 0.5) * 420;
+  function addHouse(tx, tz, scale) {
     const h = terrainHeight(tx, tz);
-    if (h < 3) continue;
+    if (h < 3) return;
     const house = new THREE.Mesh(houseGeo, houseMat);
     house.position.set(tx, h + 4.5, tz);
     house.rotation.y = rng() * Math.PI;
-    house.scale.setScalar(0.7 + rng() * 0.9);
+    house.scale.setScalar(scale);
     town.add(house);
     const roof = new THREE.Mesh(new THREE.ConeGeometry(10, 5, 4), roofMat);
     roof.position.set(tx, h + 11 * house.scale.y, tz);
@@ -153,7 +169,25 @@ export function buildWorld(scene) {
     win.position.set(tx, h + 5, tz + 6.2 * house.scale.z);
     town.add(win);
   }
+  for (let i = 0; i < 90; i++) {
+    addHouse(WORLD.town.x + (rng() - 0.5) * 520, WORLD.town.z + (rng() - 0.5) * 420, 0.7 + rng() * 0.9);
+  }
+  // Parangtritis coastal settlement: a dozen houses beside the strip.
+  for (let i = 0; i < 14; i++) {
+    addHouse(WORLD.strip2.x - 160 + (rng() - 0.5) * 260, WORLD.strip2.z + 120 + (rng() - 0.5) * 220, 0.7 + rng() * 0.7);
+  }
   group.add(town);
+
+  // --- Beacon tower at Parangtritis so the destination is findable at night ---
+  const beacon = new THREE.Group();
+  beacon.name = 'ParangtritisBeacon';
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(2, 3, 42, 8), new THREE.MeshLambertMaterial({ color: 0x8a4a3a }));
+  mast.position.set(WORLD.strip2.x + 60, terrainHeight(WORLD.strip2.x + 60, WORLD.strip2.z - 80) + 21, WORLD.strip2.z - 80);
+  beacon.add(mast);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(4, 8, 8), new THREE.MeshBasicMaterial({ color: 0xff5a4e }));
+  lamp.position.set(mast.position.x, mast.position.y + 22, mast.position.z);
+  beacon.add(lamp);
+  group.add(beacon);
 
   // --- Forest: instanced cones ---
   const treeGeo = new THREE.ConeGeometry(7, 22, 6);
@@ -208,7 +242,9 @@ export function buildWorld(scene) {
   return { group, clouds };
 }
 
-/** Ring gate positions for the ring course / race (fixed, deterministic). */
+/** Ring gate positions for the ring course / race (fixed, deterministic).
+ *  v2 keeps this as the default course; missions replace it with their own
+ *  route gates via updateRings in render.js. */
 export function ringPositions() {
   return [
     [-420, 170, 420], [-150, 190, 60], [180, 210, -160], [520, 260, -420],

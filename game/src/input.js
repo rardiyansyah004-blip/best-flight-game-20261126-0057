@@ -1,5 +1,7 @@
-// MERAPI AIRMAIL — keyboard + mouse input. Arrows/WASD fly the plane,
+// MERAPI AIRMAIL v2 — keyboard + mouse input. Arrows/WASD fly the plane,
 // mouse steers in chase view, keys work the throttle, flaps, gear, camera.
+// v2 adds the menu keys: B new mission, N free gate course, L logbook,
+// H hide UI, I instruments toggle.
 export function createInput() {
   const input = {
     keys: {},
@@ -19,12 +21,16 @@ export function createInput() {
     Space: 'brake',
   };
 
+  // Edge-triggered keys (flight toggles + v2 menu keys).
+  const EDGE_KEYS = ['KeyF', 'KeyG', 'KeyC', 'KeyP', 'KeyM', 'KeyR',
+    'KeyB', 'KeyN', 'KeyL', 'KeyH', 'KeyI', 'Escape', 'Enter'];
+
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
     input.keys[e.code] = true;
     const action = KEYMAP[e.code];
     if (action) input.pressed[action] = true;
-    if (['KeyF', 'KeyG', 'KeyC', 'KeyP', 'KeyM', 'KeyR', 'Escape', 'Enter'].includes(e.code)) {
+    if (EDGE_KEYS.includes(e.code)) {
       input.pressed[e.code] = true;
     }
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();

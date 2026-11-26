@@ -1,6 +1,10 @@
-// MERAPI AIRMAIL — arcade flight model: pitch/roll/yaw, throttle, flaps,
+// MERAPI AIRMAIL v2 — arcade flight model: pitch/roll/yaw, throttle, flaps,
 // gear, stall and spin, wind gusts, terrain and sea collision, landing check.
-import { PLANE, WORLD, clamp, wrapAngle } from './config.js';
+// v2 records every touchdown (vertical speed, centreline error, approach
+// speed) so the debrief can score the landing, and only counts a touchdown
+// as HARD after a real airborne descent (airTime) — rolling off a bump at
+// taxi speed no longer destroys the plane.
+import { PLANE, WORLD, AIRFIELDS, clamp, wrapAngle } from './config.js';
 import { terrainHeight } from './world.js';
 
 export function createFlightState() {
@@ -11,8 +15,25 @@ export function createFlightState() {
     fuel: 100, damage: 0,
     onGround: true, crashed: false, landed: false,
     verticalSpeed: 0, stalled: false, spinning: false,
-    wind: 0, gust: 0, time: 0,
+    wind: 0, gust: 0, time: 0, airTime: 0,
+    lastLanding: null, // { vs, speed, centreline, field, onRunway } — set on touchdown
   };
+}
+
+/** Across-track distance (m) from a runway centreline, signed. */
+export function runwayAcross(s, def) {
+  const dx = s.x - def.x, dz = s.z - def.z;
+  return dx * Math.cos(def.heading) - dz * Math.sin(def.heading);
+}
+
+/** Which named field (if any) the plane is over, by runway proximity. */
+export function fieldUnder(s) {
+  let best = null, bestD = 1e9;
+  for (const f of Object.values(AIRFIELDS)) {
+    const d = Math.hypot(s.x - f.x, s.z - f.z);
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return bestD < 900 ? best : null;
 }
 
 /**
@@ -85,9 +106,20 @@ export function stepFlight(s, input, dt, weather) {
   if (s.y <= ground + 1.2) {
     s.y = ground + 1.2;
     if (!s.onGround) {
-      // Touchdown: hard landing = damage; gentle = landed.
-      const hard = Math.abs(s.verticalSpeed) > 7 || Math.abs(s.roll) > 0.5;
-      const fast = s.speed > 70;
+      // Touchdown: record the landing quality BEFORE zeroing vertical speed.
+      const field = fieldUnder(s);
+      const def = field ? { x: field.x, z: field.z, heading: field.heading, length: field.length, width: field.width } : null;
+      s.lastLanding = {
+        vs: s.verticalSpeed,                 // m/s, negative = descending
+        speed: s.speed,                      // m/s at touchdown
+        centreline: def ? Math.abs(runwayAcross(s, def)) : 999,
+        field: field ? field.name : 'Off-field',
+        onRunway: def ? onRunway(s, def) : false,
+      };
+      // Touchdown damage only after a real airborne descent: a plane that
+      // merely rolls off a bump (airTime ~ 0) touches down gently.
+      const hard = s.airTime > 0.4 && (Math.abs(s.verticalSpeed) > 7 || Math.abs(s.roll) > 0.5);
+      const fast = s.airTime > 0.2 && s.speed > 70;
       if (hard || fast) {
         s.damage += hard ? 45 : 20;
         events.touchedDown = true;
@@ -99,6 +131,7 @@ export function stepFlight(s, input, dt, weather) {
       s.verticalSpeed = 0;
       s.pitch = 0;
       s.roll *= 0.4;
+      s.airTime = 0;
     }
     s.onGround = true;
     // Rolling friction / braking.
@@ -106,6 +139,7 @@ export function stepFlight(s, input, dt, weather) {
     if (s.speed < 8 && s.throttle < 0.1) s.speed = Math.max(0, s.speed - 6 * dt);
   } else {
     s.onGround = false;
+    s.airTime += dt;
     if (wasGround && s.speed > stallSpeed) events.tookOff = true;
   }
 
@@ -132,4 +166,20 @@ export function onRunway(s, def) {
   const along = dx * Math.sin(def.heading) + dz * Math.cos(def.heading);
   const across = dx * Math.cos(def.heading) - dz * Math.sin(def.heading);
   return Math.abs(along) < def.length / 2 && Math.abs(across) < def.width / 2 + 6;
+}
+
+/**
+ * Score a landing 0-100 from touchdown quality.
+ * vs: vertical speed (m/s, negative), centreline: metres off centre,
+ * speed: approach speed (m/s). Returns { score, grade }.
+ */
+export function scoreLanding(vs, centreline, speed) {
+  const absVs = Math.abs(vs);
+  const vsScore = absVs <= 2 ? 100 : absVs <= 4 ? 80 : absVs <= 7 ? 55 : 25;
+  const clScore = centreline <= 5 ? 100 : centreline <= 12 ? 80 : centreline <= 20 ? 55 : 30;
+  const kt = speed * 1.94384;
+  const spScore = kt >= 40 && kt <= 60 ? 100 : kt > 60 && kt <= 75 ? 75 : kt > 75 ? 45 : 60;
+  const score = Math.round(vsScore * 0.4 + clScore * 0.3 + spScore * 0.3);
+  const grade = score >= 90 ? 'GREASED' : score >= 75 ? 'SMOOTH' : score >= 55 ? 'FIRM' : 'HARD';
+  return { score, grade };
 }

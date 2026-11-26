@@ -11,10 +11,10 @@
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   /* HUD */
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  #hud-top { position: absolute; top: 12px; left: 372px;
-    display: flex; gap: 10px; }
+  #hud-top { position: absolute; top: 12px; left: 348px;
+    display: flex; gap: 8px; }
   .hud-box { background: rgba(8, 14, 22, 0.72); border: 1px solid rgba(255, 211, 77, 0.55);
-    border-radius: 8px; padding: 6px 14px; text-align: center; min-width: 92px; }
+    border-radius: 8px; padding: 6px 10px; text-align: center; min-width: 84px; }
   .hud-label { display: block; font-size: 11px; letter-spacing: 2px; color: #9fc3d8; }
   .hud-value { display: block; font-size: 24px; font-weight: 700; font-family: monospace; color: #fff; }
   #hud-compass { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
@@ -22,23 +22,42 @@
   #hud-mission { position: absolute; top: 12px; left: 14px; background: rgba(8, 14, 22, 0.72);
     border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px 14px; max-width: 340px; }
   #hud-mission-name { font-weight: 800; letter-spacing: 1px; color: #ffd34d; font-size: 15px; }
+  #hud-route { font-size: 13px; color: #ffd34d; font-weight: 700; margin-top: 2px; letter-spacing: 1px; }
   #hud-objective { font-size: 14px; margin-top: 4px; }
+  #hud-gate-line { font-family: monospace; font-size: 14px; margin-top: 2px; color: #ffc233; }
   #hud-timer, #hud-score { font-family: monospace; font-size: 15px; margin-top: 2px; color: #cfe3ee; }
+  #hud-best { font-family: monospace; font-size: 12px; margin-top: 4px; color: #9fc3d8; }
+  #hud-atc { position: absolute; top: 236px; left: 14px; background: rgba(8, 14, 22, 0.66);
+    border: 1px solid rgba(255,255,255,0.22); border-radius: 8px; padding: 8px 12px; max-width: 340px; }
+  #hud-atc-title { font-size: 11px; letter-spacing: 2px; color: #9fc3d8; font-weight: 700; margin-bottom: 4px; }
+  .atc-line { font-size: 12.5px; line-height: 1.45; color: #d7e6f0; margin-top: 3px; }
   #minimap { position: absolute; right: 14px; top: 12px; border-radius: 50%;
     border: 2px solid rgba(255,255,255,0.35); background: rgba(8,14,22,0.5); }
-  #hud-warnings { position: absolute; top: 130px; left: 50%; transform: translateX(-50%);
+  #hud-approach { position: absolute; right: 14px; top: 204px; background: rgba(8, 14, 22, 0.72);
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px 14px; width: 216px; }
+  #hud-approach-title { font-size: 11px; letter-spacing: 2px; color: #ffd34d; font-weight: 800; margin-bottom: 4px; }
+  .ap-row { display: flex; justify-content: space-between; font-size: 13px; margin-top: 3px; }
+  .ap-row span { color: #9fc3d8; letter-spacing: 1px; font-size: 11px; }
+  .ap-row b { font-family: monospace; font-weight: 700; }
+  #hud-gate { position: absolute; top: 118px; left: 50%; transform: translateX(-50%);
+    background: rgba(8, 14, 22, 0.72); border: 1px solid rgba(255, 194, 51, 0.7); border-radius: 8px;
+    padding: 6px 16px; font-size: 17px; font-weight: 800; font-family: monospace; color: #ffc233;
+    letter-spacing: 1px; display: none; }
+  #hud-warnings { position: absolute; top: 214px; left: 50%; transform: translateX(-50%);
     color: #ff5a4e; font-weight: 800; font-size: 22px; letter-spacing: 2px;
     text-shadow: 0 0 12px rgba(255, 60, 40, 0.8); display: none; }
-  #hud-message { position: absolute; top: 122px; left: 50%; transform: translateX(-50%);
+  #hud-message { position: absolute; top: 164px; left: 50%; transform: translateX(-50%);
     background: rgba(8, 14, 22, 0.72); border-radius: 8px; padding: 8px 18px; font-size: 16px;
     max-width: 80%; text-align: center; }
+  #dials { position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); }
   #hud-help { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
     font-size: 12px; color: rgba(238, 244, 248, 0.75); background: rgba(8,14,22,0.55);
     padding: 5px 12px; border-radius: 6px; white-space: nowrap; }
-  /* Menus */
-  #menu { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center;
+  /* Menus — flex-start, not center: a panel taller than the viewport would
+     otherwise have its top clipped by centered flex layout. */
+  #menu { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start;
     justify-content: center; background: rgba(6, 10, 16, 0.55); overflow-y: auto; }
-  .panel { background: rgba(10, 18, 28, 0.92); border: 1px solid #ffd34d; border-radius: 14px;
+  .panel { box-sizing: border-box; background: rgba(10, 18, 28, 0.92); border: 1px solid #ffd34d; border-radius: 14px;
     padding: 28px 34px; max-width: 760px; width: 92%; text-align: center;
     box-shadow: 0 12px 60px rgba(0,0,0,0.6); margin: 20px auto; }
   .panel h1 { margin: 0; font-size: 46px; letter-spacing: 4px; color: #ffd34d; }
@@ -46,6 +65,7 @@
   .subtitle { font-size: 17px; color: #cfe3ee; margin: 8px 0 2px; }
   .tagline { font-style: italic; color: #9fc3d8; margin: 2px 0 18px; }
   .brief { font-size: 16px; line-height: 1.5; text-align: left; }
+  .route-line { font-size: 15px; font-weight: 800; letter-spacing: 1px; color: #ffd34d; margin: 6px 0; }
   .medals { font-family: monospace; font-size: 15px; color: #ffd34d; margin: 14px 0; }
   .howto { font-size: 13px; color: #9fc3d8; margin-top: 16px; line-height: 1.6; }
   .missions { display: flex; flex-direction: column; gap: 8px; text-align: left; }
@@ -61,6 +81,16 @@
     font-size: 18px; font-weight: 800; padding: 12px 28px; cursor: pointer; margin: 6px; letter-spacing: 1px; }
   .big-btn.secondary { background: transparent; color: #eef4f8; border: 1px solid rgba(255,255,255,0.5); }
   .big-btn:hover { filter: brightness(1.1); }
+  .debrief { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 10px; padding: 12px 18px; margin: 12px 0; text-align: left; }
+  .debrief h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: 1px; color: #ffd34d; }
+  .debrief-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
+  .debrief-grid span { display: block; font-size: 11px; letter-spacing: 1px; color: #9fc3d8; }
+  .debrief-grid b { font-family: monospace; font-size: 17px; }
+  .landing-score { font-family: monospace; font-size: 18px; font-weight: 800; color: #39ff88; margin: 10px 0 0; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; margin: 6px 0 14px; }
+  .log-table th { color: #9fc3d8; font-size: 11px; letter-spacing: 1px; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.25); }
+  .log-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); font-family: monospace; }
 </style>
 <script type="importmap">
 { "imports": { "three": "./vendor/three.min.js" } }

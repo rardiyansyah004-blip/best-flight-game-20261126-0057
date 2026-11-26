@@ -1,10 +1,13 @@
-// MERAPI AIRMAIL — game loop and state machine: title, briefing, flying,
-// paused, results. Also hosts the deterministic ?shot= scenes for screenshots.
-import { WORLD, MISSIONS } from './config.js';
+// MERAPI AIRMAIL v2 — game loop and state machine: title, briefing, flying,
+// paused, results, logbook. Also hosts the deterministic ?shot= scenes.
+// v2: B starts a new mission, N a free gate course, L the logbook, H hides
+// the UI, I toggles instruments; missions start on their route's origin
+// field and the ring gates follow the route.
+import { WORLD, MISSIONS, AIRFIELDS } from './config.js';
 import { createFlightState, stepFlight, onRunway } from './flight.js';
-import { createMission, stepMission, weatherFor, loadPilotLog, savePilotLog, medalFor } from './missions.js';
-import { createRenderer, applyLighting, updateScene, setRingStates, updatePanel } from './render.js';
-import { buildHud, updateHud, showTitle, showBriefing, showResults, hideMenu } from './hud.js';
+import { createMission, stepMission, weatherFor, loadPilotLog, savePilotLog, medalFor, recordFlight, gateProgress } from './missions.js';
+import { createRenderer, applyLighting, updateScene, setRingStates, updatePanel, updateRings } from './render.js';
+import { buildHud, updateHud, showTitle, showBriefing, showResults, showLogbook, hideMenu } from './hud.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { stageShot } from './shots.js';
@@ -13,7 +16,7 @@ const params = new URLSearchParams(location.search);
 const SHOT = params.get('shot'); // cover | cockpit | rings | night
 
 const game = {
-  screen: 'title', // title | briefing | play | paused | results
+  screen: 'title', // title | briefing | play | paused | results | logbook
   flight: createFlightState(),
   mission: null,
   missionId: 'takeoff',
@@ -21,6 +24,9 @@ const game = {
   weather: { mode: 'day', gustStrength: 0.15, windSpeed: 2, rain: false },
   log: loadPilotLog(),
   paused: false,
+  instruments: true,
+  hudVisible: true,
+  screenBeforeLogbook: 'title',
 };
 
 const r = createRenderer();
@@ -28,10 +34,10 @@ const hud = buildHud();
 const input = createInput();
 const audio = createAudio();
 
-game.newMission = function newMission(id) {
+game.newMission = function newMission(id, opts) {
   game.missionId = id;
   game.weather = weatherFor(id);
-  return createMission(id, game.weather);
+  return createMission(id, game.weather, opts);
 };
 game.setCameraMode = function setCameraMode(mode) { game.cameraMode = mode; };
 game.setWeather = function setWeather(w) {
@@ -40,13 +46,24 @@ game.setWeather = function setWeather(w) {
   r.rain.visible = !!w.rain;
 };
 
-function resetFlightForMission(id) {
+function resetFlightForMission(id, opts) {
   game.flight = createFlightState();
-  game.mission = game.newMission(id);
+  game.mission = game.newMission(id, opts);
   game.cameraMode = 'chase';
   game.setWeather(game.weather);
   applyLighting(r, game.weather.mode);
   r.rain.visible = !!game.weather.rain;
+  // Gates follow this mission's route.
+  updateRings(r.rings, game.mission.gates);
+  // Start on the route's origin field (not always Merapi).
+  const origin = game.mission.origin;
+  if (origin.id !== 'merapi') {
+    const fx = Math.sin(origin.heading), fz = Math.cos(origin.heading);
+    game.flight.x = origin.x - fx * (origin.length / 2 - 30);
+    game.flight.z = origin.z - fz * (origin.length / 2 - 30);
+    game.flight.heading = origin.heading;
+    game.flight.y = 8;
+  }
   // Storm / night missions start airborne for a quicker start.
   if (id === 'storm') {
     game.flight.x = -900; game.flight.z = 900; game.flight.y = 320;
@@ -60,10 +77,10 @@ function resetFlightForMission(id) {
   }
 }
 
-function startMission(id) {
-  resetFlightForMission(id);
+function startMission(id, opts) {
+  resetFlightForMission(id, opts);
   game.screen = 'briefing';
-  showBriefing(game.mission);
+  showBriefing(game.mission, game.log);
 }
 
 function flyMission() {
@@ -81,15 +98,17 @@ function backToTitle() {
   showTitle(game.log);
 }
 
+function openLogbook() {
+  game.screenBeforeLogbook = game.screen === 'logbook' ? 'title' : game.screen;
+  game.screen = 'logbook';
+  showLogbook(game.log);
+}
+
 function finishMissionScreen() {
   game.screen = 'results';
   const m = game.mission;
   if (m.finished) {
-    const prev = game.log[m.def.id];
-    if (!prev || m.elapsed < prev.time || (m.medal === 'gold' && prev.medal !== 'gold')) {
-      game.log[m.def.id] = { time: Math.round(m.elapsed), score: m.score, medal: m.medal };
-      savePilotLog(game.log);
-    }
+    m.newBest = recordFlight(game.log, m);
   }
   showResults(m, game.log);
 }
@@ -97,6 +116,7 @@ function finishMissionScreen() {
 window.addEventListener('merapi:mission', (e) => startMission(e.detail));
 window.addEventListener('merapi:fly', () => flyMission());
 window.addEventListener('merapi:back', () => backToTitle());
+window.addEventListener('merapi:logbook', () => openLogbook());
 
 // --- Shot mode: deterministic staged scenes for screenshots ---
 let shotReady = false;
@@ -105,12 +125,16 @@ if (SHOT) {
   hideMenu();
   game.flight = createFlightState();
   stageShot(SHOT, game);
+  updateRings(r.rings, game.mission.gates);
+  // Colour the gates for the staged progress (done = green, next = amber).
+  const shotProg = gateProgress(game.mission);
+  setRingStates(r.rings, shotProg.next < shotProg.total ? shotProg.next : -1, shotProg.done);
   // Let the camera settle, then mark ready for the screenshot tool.
   let settle = 0;
   const settleLoop = () => {
     updateScene(r, game.flight, game.cameraMode, 1 / 60, 0);
     updatePanel(r, game.flight);
-    updateHud(hud, game.flight, game.mission, game.cameraMode);
+    updateHud(hud, game.flight, game.mission, game.cameraMode, { log: game.log, dt: 1 / 60, instruments: true });
     r.renderer.render(r.scene, r.camera);
     settle += 1;
     if (settle < 45) requestAnimationFrame(settleLoop);
@@ -130,6 +154,29 @@ function loop(now) {
   last = now;
   if (SHOT) return; // shot mode renders its own settled frame
 
+  // Menu keys work on every screen.
+  if (input.consume('KeyH')) {
+    game.hudVisible = !game.hudVisible;
+    hud.root.style.display = game.hudVisible ? 'block' : 'none';
+  }
+  if (input.consume('KeyI')) game.instruments = !game.instruments;
+  if (input.consume('KeyL')) {
+    if (game.screen === 'logbook') backToTitle();
+    else openLogbook();
+  }
+  if (game.screen === 'title') {
+    if (input.consume('KeyB')) startMission(game.missionId || 'airmail');
+    if (input.consume('KeyN')) startMission('rings', { free: true });
+  }
+  if (game.screen === 'briefing' && input.consume('Enter')) flyMission();
+  if (game.screen === 'logbook' && (input.consume('Escape') || input.consume('KeyB'))) {
+    if (game.screenBeforeLogbook === 'play' || game.screenBeforeLogbook === 'results') {
+      game.screen = game.screenBeforeLogbook;
+      hideMenu();
+      if (game.screenBeforeLogbook === 'results') showResults(game.mission, game.log);
+    } else backToTitle();
+  }
+
   if (game.screen === 'play' && !game.paused) {
     input.poll();
     const ctrl = {
@@ -145,14 +192,13 @@ function loop(now) {
     audio.update(game.flight.throttle, game.flight.speed, game.flight.onGround);
     if (events.touchedDown) audio.thud();
     if (events.tookOff) audio.ring();
-    if (game.mission && game.mission.step > 0 && game.mission.message.includes('Ring') && !game._rang) { audio.ring(); game._rang = true; }
+    if (game.mission && game.mission.step > 0 && game.mission.message.includes('Gate') && !game._rang) { audio.ring(); game._rang = true; }
     if (game.flight.stalled && now - stallAlarmAt > 1200) { audio.alarm(); stallAlarmAt = now; }
     if (game.mission && (game.mission.finished || game.mission.failed)) finishMissionScreen();
-    // Ring gate colours follow mission progress.
+    // Ring gate colours follow mission progress (bonus kinds use bonusStep).
     if (game.mission) {
-      const list = game.mission.def.kind === 'race' ? game.mission.gates : game.mission.rings;
-      const done = list.filter((g) => g.done).length;
-      setRingStates(r.rings, game.mission.step < list.length ? game.mission.step : -1, done);
+      const prog = gateProgress(game.mission);
+      setRingStates(r.rings, prog.next < prog.total ? prog.next : -1, prog.done);
     }
   }
   if (input.consume('KeyP') && game.screen === 'play') {
@@ -174,11 +220,11 @@ function loop(now) {
   if (game.screen === 'play' || game.screen === 'paused') {
     updateScene(r, game.flight, game.cameraMode, dt, now / 1000);
     updatePanel(r, game.flight);
-    updateHud(hud, game.flight, game.mission, game.cameraMode);
+    updateHud(hud, game.flight, game.mission, game.cameraMode, { log: game.log, dt, instruments: game.instruments });
     r.renderer.render(r.scene, r.camera);
   }
 }
 requestAnimationFrame(loop);
 
 // Expose a tiny debug handle for play-testing in the console.
-window.__merapi = { game, WORLD, MISSIONS, medalFor };
+window.__merapi = { game, WORLD, MISSIONS, medalFor, AIRFIELDS };

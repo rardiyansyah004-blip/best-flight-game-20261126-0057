@@ -1,5 +1,9 @@
-// MERAPI AIRMAIL — renderer: scene, golden-hour / day / night lighting,
+// MERAPI AIRMAIL v2 — renderer: scene, golden-hour / day / night lighting,
 // sky dome, chase + cockpit cameras, rain, and the per-frame camera follow.
+// v2: ring gates are repositioned per mission (updateRings) so the gates
+// follow the mission's route instead of one fixed course. The chase camera
+// SNAPS to its target when far away (mission start, screenshot staging)
+// instead of lerping across the island, so the first frame is already framed.
 import * as THREE from 'three';
 import { buildWorld, buildRings, ringPositions } from './world.js';
 import { buildAircraft, createPanelTexture, drawPanel, buildCockpitPanel } from './aircraft.js';
@@ -103,6 +107,22 @@ export function applyLighting(r, mode) {
   }
 }
 
+/** Move the ring meshes onto a mission's route gates. Extra rings hide. */
+export function updateRings(rings, positions) {
+  rings.forEach((ring, i) => {
+    if (i < positions.length) {
+      const p = positions[i];
+      ring.visible = true;
+      ring.position.set(p.x, p.y, p.z);
+      const prev = positions[Math.max(0, i - 1)];
+      ring.rotation.y = Math.atan2(p.x - prev.x, p.z - prev.z);
+      ring.name = 'RingGate' + (i + 1);
+    } else {
+      ring.visible = false;
+    }
+  });
+}
+
 /** Position the plane mesh + cameras from flight state. */
 export function updateScene(r, flight, cameraMode, dt, time) {
   const plane = r.plane;
@@ -143,10 +163,12 @@ export function updateScene(r, flight, cameraMode, dt, time) {
   } else {
     plane.visible = true;
     r.panelMesh.visible = false;
-    // Chase camera: behind and above, smoothed.
+    // Chase camera: behind and above, smoothed — but snap straight there
+    // when far away, so mission starts and staged shots frame at once.
     const back = 16 + flight.speed * 0.08;
     const target = new THREE.Vector3(flight.x - fx * back, flight.y + 5.5 + flight.speed * 0.02, flight.z - fz * back);
-    r.camera.position.lerp(target, Math.min(1, dt * 5));
+    if (r.camera.position.distanceTo(target) > 60) r.camera.position.copy(target);
+    else r.camera.position.lerp(target, Math.min(1, dt * 5));
     r.camera.up.copy(up);
     const look = new THREE.Vector3(flight.x + fx * 30, flight.y + Math.sin(flight.pitch) * 20, flight.z + fz * 30);
     r.camera.lookAt(look);
@@ -164,14 +186,12 @@ export function updateScene(r, flight, cameraMode, dt, time) {
     }
     pos.needsUpdate = true;
   }
-
-  // Ring gates: only the next one pulses bright; done ones go green.
-  // (Colour updates are driven by main.js via setRingStates.)
 }
 
 /** Colour the ring gates: next = pulsing amber, done = green, later = dim. */
 export function setRingStates(rings, nextIndex, doneCount) {
   rings.forEach((ring, i) => {
+    if (!ring.visible) return;
     const mat = ring.material;
     if (i < doneCount) mat.color.set(0x39ff88);
     else if (i === nextIndex) mat.color.set(0xffc233);
