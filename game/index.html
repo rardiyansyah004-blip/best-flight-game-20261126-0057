@@ -6,8 +6,25 @@
 <link rel="icon" href="data:,">
 <title>Merapi Airmail — a 3D island flight game</title>
 <style>
+  /* v4 (UI feel): the v3 panels were flat dark boxes with hard 1px borders —
+     they read as a debug overlay, not a game UI. v4 softens everything:
+     layered gradients, 14px radii, deep shadows with a top highlight, and
+     gentle motion (fade/slide/pop) so panels, banners and the nav drawer
+     arrive instead of snapping in. Every HUD element stays readable over
+     bright sky and dark night alike. (Backdrop blur was tried and removed:
+     it halved the frame rate in software rendering — the gradient + shadow
+     carries the soft look on its own, at full speed.) */
+  :root {
+    --gold: #ffd34d;
+    --gold-dim: #ffc233;
+    --ink: #eef4f8;
+    --ink-dim: #9fc3d8;
+    --panel-bg: linear-gradient(180deg, rgba(17, 27, 42, 0.86), rgba(8, 14, 22, 0.80));
+    --panel-border: 1px solid rgba(255, 255, 255, 0.16);
+    --panel-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1018;
-    font-family: "Segoe UI", system-ui, sans-serif; color: #eef4f8; }
+    font-family: "Segoe UI", system-ui, sans-serif; color: var(--ink); }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   /* HUD — v3: the top row holds 8 boxes (ALT/SPD/HDG/THR/FUEL/WIND/TRIM/AP), so the
@@ -15,83 +32,114 @@
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
   #hud-top { position: absolute; top: 12px; left: 368px;
     display: flex; gap: 6px; }
-  .hud-box { background: rgba(8, 14, 22, 0.72); border: 1px solid rgba(255, 211, 77, 0.55);
-    border-radius: 8px; padding: 6px 6px; text-align: center; min-width: 64px; }
-  .hud-label { display: block; font-size: 11px; letter-spacing: 2px; color: #9fc3d8; }
-  .hud-value { display: block; font-size: 19px; font-weight: 700; font-family: monospace; color: #fff; }
+  .hud-box { background: var(--panel-bg); border: var(--panel-border);
+    border-radius: 12px; padding: 6px 6px 7px; text-align: center; min-width: 64px;
+    box-shadow: var(--panel-shadow);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease; }
+  .hud-box:hover { border-color: rgba(255, 211, 77, 0.45); }
+  .hud-label { display: block; font-size: 10px; letter-spacing: 2px; color: var(--ink-dim); font-weight: 600; }
+  .hud-value { display: block; font-size: 19px; font-weight: 700; font-family: monospace; color: #fff;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55); }
   #hud-compass { position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
-    border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.25); }
-  #hud-mission { position: absolute; top: 12px; left: 14px; background: rgba(8, 14, 22, 0.72);
-    border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px 14px; max-width: 340px; }
-  #hud-mission-name { font-weight: 800; letter-spacing: 1px; color: #ffd34d; font-size: 15px; }
-  #hud-route { font-size: 13px; color: #ffd34d; font-weight: 700; margin-top: 2px; letter-spacing: 1px; }
-  #hud-objective { font-size: 14px; margin-top: 4px; }
-  #hud-gate-line { font-family: monospace; font-size: 14px; margin-top: 2px; color: #ffc233; }
-  #hud-timer, #hud-score { font-family: monospace; font-size: 15px; margin-top: 2px; color: #cfe3ee; }
-  #hud-best { font-family: monospace; font-size: 12px; margin-top: 4px; color: #9fc3d8; }
-  #hud-atc { position: absolute; top: 236px; left: 14px; background: rgba(8, 14, 22, 0.66);
-    border: 1px solid rgba(255,255,255,0.22); border-radius: 8px; padding: 8px 12px; max-width: 340px; }
-  #hud-atc-title { font-size: 11px; letter-spacing: 2px; color: #9fc3d8; font-weight: 700; margin-bottom: 4px; }
-  .atc-line { font-size: 12.5px; line-height: 1.45; color: #d7e6f0; margin-top: 3px; }
+    border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,0.22);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent);
+    mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent); }
+  #hud-mission { position: absolute; top: 12px; left: 14px; background: var(--panel-bg);
+    border: var(--panel-border); border-radius: 14px; padding: 12px 16px; max-width: 340px;
+    box-shadow: var(--panel-shadow); }
+  #hud-mission-name { font-weight: 800; letter-spacing: 1px; color: var(--gold); font-size: 15px;
+    text-shadow: 0 1px 8px rgba(255, 211, 77, 0.35); }
+  #hud-route { font-size: 13px; color: var(--gold); font-weight: 700; margin-top: 3px; letter-spacing: 1px; }
+  #hud-objective { font-size: 14px; margin-top: 5px; line-height: 1.4; }
+  #hud-gate-line { font-family: monospace; font-size: 14px; margin-top: 3px; color: var(--gold-dim); }
+  #hud-timer, #hud-score { font-family: monospace; font-size: 15px; margin-top: 3px; color: #cfe3ee; }
+  #hud-best { font-family: monospace; font-size: 12px; margin-top: 5px; color: var(--ink-dim); }
+  #hud-atc { position: absolute; top: 236px; left: 14px; background: var(--panel-bg);
+    border: var(--panel-border); border-radius: 14px; padding: 10px 14px; max-width: 340px;
+    box-shadow: var(--panel-shadow); }
+  #hud-atc-title { font-size: 11px; letter-spacing: 2px; color: var(--ink-dim); font-weight: 700; margin-bottom: 5px; }
+  .atc-line { font-size: 12.5px; line-height: 1.5; color: #d7e6f0; margin-top: 4px;
+    animation: fadeSlideIn 0.45s ease both; }
   #minimap { position: absolute; right: 14px; top: 12px; border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.35); background: rgba(8,14,22,0.5); }
-  #hud-approach { position: absolute; right: 14px; top: 204px; background: rgba(8, 14, 22, 0.72);
-    border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px 14px; width: 216px; }
-  #hud-approach-title { font-size: 11px; letter-spacing: 2px; color: #ffd34d; font-weight: 800; margin-bottom: 4px; }
-  .ap-row { display: flex; justify-content: space-between; font-size: 13px; margin-top: 3px; }
-  .ap-row span { color: #9fc3d8; letter-spacing: 1px; font-size: 11px; }
+    border: 2px solid rgba(255,255,255,0.4); background: rgba(8,14,22,0.5);
+    box-shadow: 0 0 0 4px rgba(8, 14, 22, 0.35), 0 8px 26px rgba(0, 0, 0, 0.5); }
+  #hud-approach { position: absolute; right: 14px; top: 204px; background: var(--panel-bg);
+    border: var(--panel-border); border-radius: 14px; padding: 12px 16px; width: 216px;
+    box-shadow: var(--panel-shadow); }
+  #hud-approach-title { font-size: 11px; letter-spacing: 2px; color: var(--gold); font-weight: 800; margin-bottom: 5px; }
+  .ap-row { display: flex; justify-content: space-between; font-size: 13px; margin-top: 4px; }
+  .ap-row span { color: var(--ink-dim); letter-spacing: 1px; font-size: 11px; }
   .ap-row b { font-family: monospace; font-weight: 700; }
   #hud-gate { position: absolute; top: 118px; left: 50%; transform: translateX(-50%);
-    background: rgba(8, 14, 22, 0.72); border: 1px solid rgba(255, 194, 51, 0.7); border-radius: 8px;
-    padding: 6px 16px; font-size: 17px; font-weight: 800; font-family: monospace; color: #ffc233;
-    letter-spacing: 1px; display: none; }
+    background: var(--panel-bg); border: 1px solid rgba(255, 194, 51, 0.75); border-radius: 999px;
+    padding: 7px 20px; font-size: 17px; font-weight: 800; font-family: monospace; color: var(--gold-dim);
+    letter-spacing: 1px; display: none;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5), 0 0 18px rgba(255, 194, 51, 0.25), inset 0 1px 0 rgba(255,255,255,0.12); }
+  #hud-gate.pop { animation: popIn 0.35s cubic-bezier(0.2, 0.9, 0.25, 1.4) both; }
   #hud-warnings { position: absolute; top: 214px; left: 50%; transform: translateX(-50%);
     color: #ff5a4e; font-weight: 800; font-size: 22px; letter-spacing: 2px;
-    text-shadow: 0 0 12px rgba(255, 60, 40, 0.8); display: none; }
+    text-shadow: 0 0 12px rgba(255, 60, 40, 0.8); display: none;
+    animation: warnPulse 1.1s ease-in-out infinite; }
   #hud-message { position: absolute; top: 164px; left: 50%; transform: translateX(-50%);
-    background: rgba(8, 14, 22, 0.72); border-radius: 8px; padding: 8px 18px; font-size: 16px;
-    max-width: 80%; text-align: center; }
-  #dials { position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); }
+    background: var(--panel-bg); border: var(--panel-border); border-radius: 999px; padding: 9px 20px; font-size: 16px;
+    max-width: 80%; text-align: center; box-shadow: var(--panel-shadow); }
+  #hud-message.slide { animation: fadeSlideIn 0.45s ease both; }
+  #dials { position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%);
+    filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.5)); }
   #hud-help { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-    font-size: 12px; color: rgba(238, 244, 248, 0.75); background: rgba(8,14,22,0.55);
-    padding: 5px 12px; border-radius: 6px; white-space: nowrap; }
+    font-size: 12px; color: rgba(238, 244, 248, 0.8); background: rgba(8,14,22,0.6);
+    padding: 6px 14px; border-radius: 999px; white-space: nowrap; border: 1px solid rgba(255,255,255,0.12); }
+  @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes popIn { from { opacity: 0; transform: translateX(-50%) scale(0.86); } to { opacity: 1; transform: translateX(-50%) scale(1); } }
+  @keyframes warnPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   /* Menus — flex-start, not center: a panel taller than the viewport would
      otherwise have its top clipped by centered flex layout. */
   #menu { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start;
     justify-content: center; background: rgba(6, 10, 16, 0.55); overflow-y: auto; }
-  .panel { box-sizing: border-box; background: rgba(10, 18, 28, 0.92); border: 1px solid #ffd34d; border-radius: 14px;
+  .panel { box-sizing: border-box; background: linear-gradient(180deg, rgba(14, 24, 38, 0.96), rgba(9, 15, 25, 0.94));
+    border: 1px solid rgba(255, 211, 77, 0.45); border-radius: 18px;
     padding: 28px 34px; max-width: 760px; width: 92%; text-align: center;
-    box-shadow: 0 12px 60px rgba(0,0,0,0.6); margin: 20px auto; }
-  .panel h1 { margin: 0; font-size: 46px; letter-spacing: 4px; color: #ffd34d; }
-  .panel h2 { margin: 0 0 10px; font-size: 30px; letter-spacing: 2px; color: #ffd34d; }
+    box-shadow: 0 24px 80px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.1); margin: 20px auto;
+    animation: fadeSlideIn 0.4s ease both; }
+  .panel h1 { margin: 0; font-size: 46px; letter-spacing: 4px; color: var(--gold);
+    text-shadow: 0 2px 18px rgba(255, 211, 77, 0.4); }
+  .panel h2 { margin: 0 0 10px; font-size: 30px; letter-spacing: 2px; color: var(--gold); }
   .subtitle { font-size: 17px; color: #cfe3ee; margin: 8px 0 2px; }
-  .tagline { font-style: italic; color: #9fc3d8; margin: 2px 0 18px; }
-  .brief { font-size: 16px; line-height: 1.5; text-align: left; }
-  .route-line { font-size: 15px; font-weight: 800; letter-spacing: 1px; color: #ffd34d; margin: 6px 0; }
-  .medals { font-family: monospace; font-size: 15px; color: #ffd34d; margin: 14px 0; }
-  .howto { font-size: 13px; color: #9fc3d8; margin-top: 16px; line-height: 1.6; }
+  .tagline { font-style: italic; color: var(--ink-dim); margin: 2px 0 18px; }
+  .brief { font-size: 16px; line-height: 1.55; text-align: left; }
+  .route-line { font-size: 15px; font-weight: 800; letter-spacing: 1px; color: var(--gold); margin: 6px 0; }
+  .medals { font-family: monospace; font-size: 15px; color: var(--gold); margin: 14px 0; }
+  .howto { font-size: 13px; color: var(--ink-dim); margin-top: 16px; line-height: 1.6; }
   .missions { display: flex; flex-direction: column; gap: 8px; text-align: left; }
   .mission-btn { display: grid; grid-template-columns: 34px 1fr 1.4fr auto; gap: 12px; align-items: center;
-    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.25); color: #eef4f8;
-    border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 15px; width: 100%; }
-  .mission-btn:hover { background: rgba(255, 211, 77, 0.18); border-color: #ffd34d; }
-  .m-num { font-family: monospace; font-weight: 800; color: #ffd34d; font-size: 18px; }
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.22); color: var(--ink);
+    border-radius: 12px; padding: 11px 15px; cursor: pointer; font-size: 15px; width: 100%;
+    transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease; }
+  .mission-btn:hover { background: rgba(255, 211, 77, 0.16); border-color: var(--gold); transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+  .mission-btn:active { transform: translateY(0) scale(0.99); }
+  .m-num { font-family: monospace; font-weight: 800; color: var(--gold); font-size: 18px; }
   .m-name { font-weight: 700; }
   .m-par { color: #cfe3ee; font-size: 13px; }
   .m-best { font-family: monospace; font-size: 13px; text-align: right; }
-  .big-btn { background: #ffd34d; color: #1a1405; border: none; border-radius: 8px;
-    font-size: 18px; font-weight: 800; padding: 12px 28px; cursor: pointer; margin: 6px; letter-spacing: 1px; }
-  .big-btn.secondary { background: transparent; color: #eef4f8; border: 1px solid rgba(255,255,255,0.5); }
-  .big-btn:hover { filter: brightness(1.1); }
-  .debrief { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.2);
-    border-radius: 10px; padding: 12px 18px; margin: 12px 0; text-align: left; }
-  .debrief h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: 1px; color: #ffd34d; }
+  .big-btn { background: var(--gold); color: #1a1405; border: none; border-radius: 10px;
+    font-size: 18px; font-weight: 800; padding: 12px 28px; cursor: pointer; margin: 6px; letter-spacing: 1px;
+    transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 6px 20px rgba(255, 211, 77, 0.25); }
+  .big-btn.secondary { background: transparent; color: var(--ink); border: 1px solid rgba(255,255,255,0.5); box-shadow: none; }
+  .big-btn:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 10px 26px rgba(255, 211, 77, 0.35); }
+  .big-btn.secondary:hover { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+  .big-btn:active { transform: translateY(0) scale(0.98); }
+  .debrief { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 12px; padding: 12px 18px; margin: 12px 0; text-align: left; }
+  .debrief h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: 1px; color: var(--gold); }
   .debrief-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
-  .debrief-grid span { display: block; font-size: 11px; letter-spacing: 1px; color: #9fc3d8; }
+  .debrief-grid span { display: block; font-size: 11px; letter-spacing: 1px; color: var(--ink-dim); }
   .debrief-grid b { font-family: monospace; font-size: 17px; }
   .landing-score { font-family: monospace; font-size: 18px; font-weight: 800; color: #39ff88; margin: 10px 0 0; }
   .log-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; margin: 6px 0 14px; }
-  .log-table th { color: #9fc3d8; font-size: 11px; letter-spacing: 1px; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.25); }
+  .log-table th { color: var(--ink-dim); font-size: 11px; letter-spacing: 1px; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.25); }
   .log-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); font-family: monospace; }
 </style>
 <script type="importmap">

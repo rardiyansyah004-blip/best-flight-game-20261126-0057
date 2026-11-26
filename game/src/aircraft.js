@@ -1,5 +1,13 @@
-// MERAPI AIRMAIL — the aircraft: a small original prop plane built from
+// MERAPI AIRMAIL v4 — the aircraft: a small original prop plane built from
 // primitives, plus the 3D cockpit panel with lit canvas-texture gauges.
+// v4 (graphics feel): the v3 plane had no lights at all, so at night it was
+// a dark silhouette and the night screenshot read as an empty sky; v4 adds
+// wingtip nav lights (red left, green right) and a white tail strobe that
+// blinks (driven by render.js). The v3 panel was a flat dark board whose
+// needles jumped every frame and whose 'AIRSPEED kt' label overflowed the
+// gauge face into the next gauge; v4 gives the panel a gradient + glass
+// gauge faces, eases every needle and value toward the live state, and
+// shortens the label so it fits.
 import * as THREE from 'three';
 
 const CREAM = 0xf2e6c9, RED = 0xc23b2e, DARK = 0x2a2e35, GLASS = 0x9fd4e8;
@@ -69,6 +77,22 @@ export function buildAircraft() {
     wheel.position.set(s * 1.35, -1.5, 1.2);
     plane.add(wheel);
   }
+  // Nav lights: red on the left wingtip, green on the right, steady; a
+  // white tail strobe that blinks (render.js toggles its visibility).
+  const navGeo = new THREE.SphereGeometry(0.22, 8, 8);
+  const leftNav = new THREE.Mesh(navGeo, new THREE.MeshBasicMaterial({ color: 0xff2a1e }));
+  leftNav.position.set(-5.8, -0.25, 0.6);
+  leftNav.name = 'NavLightLeft';
+  plane.add(leftNav);
+  const rightNav = new THREE.Mesh(navGeo, new THREE.MeshBasicMaterial({ color: 0x39ff88 }));
+  rightNav.position.set(5.8, -0.25, 0.6);
+  rightNav.name = 'NavLightRight';
+  plane.add(rightNav);
+  const strobe = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  strobe.position.set(0, 0.9, -3.9);
+  strobe.name = 'TailStrobe';
+  plane.add(strobe);
+  plane.userData.strobe = strobe;
   // Registration + airmail stripe decals (thin boxes, no textures needed).
   const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.24, 0.3, 5.4), redMat);
   stripe.position.set(0, 0.15, -0.4);
@@ -79,7 +103,16 @@ export function buildAircraft() {
 // ---------------------------------------------------------------------------
 // Cockpit panel: one canvas texture, redrawn each frame with live gauges.
 // The panel sits in front of the cockpit camera; gauges glow (emissive map).
+// v4: every needle and value eases toward the live state (module-level
+// smoothed state, frame-rate independent enough at 60 fps) instead of
+// jumping, so the cockpit reads as instruments, not a flickering readout.
 // ---------------------------------------------------------------------------
+
+/** Smoothed gauge state: needles glide instead of snapping to each frame. */
+const smooth = {
+  init: false, alt: 0, spd: 0, hdg: 0, thr: 0, fuel: 100, roll: 0, pitch: 0,
+};
+
 export function createPanelTexture() {
   const canvas = document.createElement('canvas');
   canvas.width = 1024; canvas.height = 320;
@@ -89,10 +122,18 @@ export function createPanelTexture() {
 function gauge(ctx, cx, cy, r, label, value, min, max, unit) {
   ctx.save();
   ctx.translate(cx, cy);
-  // Face.
+  // Face: dark with a soft radial falloff, then a glass highlight arc.
+  const faceGrad = ctx.createRadialGradient(0, -r * 0.4, r * 0.1, 0, 0, r);
+  faceGrad.addColorStop(0, '#1a2029');
+  faceGrad.addColorStop(1, '#0a0e13');
   ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.fillStyle = '#10141a'; ctx.fill();
+  ctx.fillStyle = faceGrad; ctx.fill();
   ctx.lineWidth = 4; ctx.strokeStyle = '#e8d9a8'; ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, r - 3, Math.PI * 1.15, Math.PI * 1.65);
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+  ctx.lineWidth = 8;
+  ctx.stroke();
   // Tick marks.
   ctx.strokeStyle = '#cfe3ee'; ctx.lineWidth = 2;
   for (let i = 0; i <= 10; i++) {
@@ -109,9 +150,10 @@ function gauge(ctx, cx, cy, r, label, value, min, max, unit) {
   ctx.lineTo(Math.cos(na) * (r - 10), Math.sin(na) * (r - 10));
   ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 4; ctx.stroke();
   ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fillStyle = '#ffb347'; ctx.fill();
-  // Labels.
-  ctx.fillStyle = '#e8f2f8'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
-  ctx.fillText(label, 0, -r + 34);
+  // Labels: 16px so 'AIRSPEED' fits its face without bleeding into the
+  // next gauge (the v3 20px 'AIRSPEED kt' was 132px wide in a 124px face).
+  ctx.fillStyle = '#e8f2f8'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(label, 0, -r + 30);
   ctx.font = 'bold 26px monospace';
   ctx.fillText(String(Math.round(value)) + unit, 0, r - 16);
   ctx.restore();
@@ -121,7 +163,11 @@ function gauge(ctx, cx, cy, r, label, value, min, max, unit) {
 export function drawPanel(panel, state) {
   const { ctx, canvas, texture } = panel;
   const W = canvas.width, H = canvas.height;
-  ctx.fillStyle = '#1c222b';
+  // Panel board: vertical gradient instead of one flat dark slab.
+  const boardGrad = ctx.createLinearGradient(0, 0, 0, H);
+  boardGrad.addColorStop(0, '#232b36');
+  boardGrad.addColorStop(1, '#141a21');
+  ctx.fillStyle = boardGrad;
   ctx.fillRect(0, 0, W, H);
   // Panel screws + trim.
   ctx.fillStyle = '#39424e';
@@ -131,17 +177,34 @@ export function drawPanel(panel, state) {
   ctx.strokeStyle = '#c23b2e'; ctx.lineWidth = 5;
   ctx.strokeRect(4, 4, W - 8, H - 8);
 
+  // Ease every displayed value toward the live state.
+  if (!smooth.init) {
+    smooth.alt = state.altFt; smooth.spd = state.speedKt; smooth.hdg = state.headingDeg;
+    smooth.thr = state.throttle; smooth.fuel = state.fuel; smooth.roll = state.roll; smooth.pitch = state.pitch;
+    smooth.init = true;
+  } else {
+    const k = 0.25;
+    smooth.alt += (state.altFt - smooth.alt) * k;
+    smooth.spd += (state.speedKt - smooth.spd) * k;
+    const dh = ((state.headingDeg - smooth.hdg + 540) % 360) - 180;
+    smooth.hdg = (smooth.hdg + dh * k + 360) % 360;
+    smooth.thr += (state.throttle - smooth.thr) * k;
+    smooth.fuel += (state.fuel - smooth.fuel) * k;
+    smooth.roll += (state.roll - smooth.roll) * k;
+    smooth.pitch += (state.pitch - smooth.pitch) * k;
+  }
+
   const r = 62;
-  gauge(ctx, 110, 130, r, 'ALT ft', state.altFt, 0, 6000, '');
-  gauge(ctx, 270, 130, r, 'AIRSPEED kt', state.speedKt, 0, 200, '');
-  gauge(ctx, 430, 130, r, 'HEADING', state.headingDeg, 0, 360, '°');
-  gauge(ctx, 590, 130, r, 'THROTTLE', state.throttle * 100, 0, 100, '%');
-  gauge(ctx, 750, 130, r, 'FUEL', state.fuel, 0, 100, '%');
+  gauge(ctx, 110, 130, r, 'ALT ft', smooth.alt, 0, 6000, '');
+  gauge(ctx, 270, 130, r, 'AIRSPEED', smooth.spd, 0, 200, '');
+  gauge(ctx, 430, 130, r, 'HEADING', smooth.hdg, 0, 360, '°');
+  gauge(ctx, 590, 130, r, 'THROTTLE', smooth.thr * 100, 0, 100, '%');
+  gauge(ctx, 750, 130, r, 'FUEL', smooth.fuel, 0, 100, '%');
   // Attitude indicator: horizon ball.
   ctx.save();
   ctx.translate(905, 130);
   ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.clip();
-  const roll = state.roll, pitch = state.pitch;
+  const roll = smooth.roll, pitch = smooth.pitch;
   ctx.rotate(-roll);
   ctx.translate(0, pitch * 90);
   ctx.fillStyle = '#3f7fd0'; ctx.fillRect(-r, -r * 2, r * 2, r * 2);
@@ -150,10 +213,16 @@ export function drawPanel(panel, state) {
   ctx.restore();
   ctx.beginPath(); ctx.arc(905, 130, r, 0, Math.PI * 2);
   ctx.lineWidth = 4; ctx.strokeStyle = '#e8d9a8'; ctx.stroke();
+  // Glass highlight on the attitude face.
+  ctx.beginPath();
+  ctx.arc(905, 130, r - 3, Math.PI * 1.15, Math.PI * 1.65);
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+  ctx.lineWidth = 8;
+  ctx.stroke();
   ctx.fillStyle = '#ffb347';
   ctx.beginPath(); ctx.moveTo(905 - 22, 130); ctx.lineTo(905 + 22, 130); ctx.lineTo(905, 130 + 10); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#e8f2f8'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
-  ctx.fillText('ATTITUDE', 905, 130 - r + 34);
+  ctx.fillStyle = '#e8f2f8'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('ATTITUDE', 905, 130 - r + 30);
 
   // Warning strip.
   ctx.font = 'bold 24px monospace'; ctx.textAlign = 'left';

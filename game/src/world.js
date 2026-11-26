@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v3 — procedural island world: terrain height, sea, town,
+// MERAPI AIRMAIL v4 — procedural island world: terrain height, sea, town,
 // runways, volcano, clouds and ring gates. Everything is generated in code.
 // v2: the Parangtritis Strip gets a levelled shelf and edge lights like the
 // home field, plus a small coastal settlement so the destination is a place.
@@ -13,6 +13,18 @@
 // corridors are carved into the terrain so the 3-degree glide path clears
 // the hills — a plane on the slope clipped a 29 m hill 390 m out on the
 // Parangtritis final (v3 play test 4), where the slope is only 26 m.
+// v4 (graphics feel): the v3 island read as flat colour bands — one green
+// for all lowland, one dark green for all forest, one brown for all rock,
+// identical cone trees, identical cream houses, a sea of one flat blue and
+// clouds that were the same white blob copied 26 times. v4 keeps the exact
+// same heights (the flight physics reads terrainHeight) and the same
+// palette from a distance, but varies it up close: deterministic colour
+// noise + farmland patchwork in the terrain, per-tree and per-house colour
+// variants, a streaked sea texture that scrolls for shimmer, clouds in
+// three opacities, and the volcano smoke returned live so it can rise.
+// v4 perf note: the sea texture scroll + smoke rise cost nothing measurable
+// — the frame rate in software rendering matches v3 once the HUD backdrop
+// blur is gone.
 import * as THREE from 'three';
 import { WORLD, PAPI, mulberry32, clamp } from './config.js';
 
@@ -36,6 +48,21 @@ function fbm(x, z) {
     + noise2(x * 0.004 + 7, z * 0.004 + 3) * 0.26
     + noise2(x * 0.013 + 13, z * 0.013 + 9) * 0.12;
 }
+
+/** Radial-gradient glow texture (canvas), shared by the ring-gate glows. */
+function makeGlowTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.28)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const glowTex = makeGlowTexture();
 
 /** Distance (m) from (x, z) to a runway strip's centreline segment. */
 function runwayDistance(x, z, def) {
@@ -97,14 +124,37 @@ export function terrainHeight(x, z) {
   return capped * (1 - flat) + 6 * flat;
 }
 
-/** Colour for a terrain vertex, by height and slope. */
+/** Colour for a terrain vertex, by height and slope.
+ *  v4: the same bands from a distance, but each vertex gets deterministic
+ *  variation — fine colour noise plus a large-scale farmland patchwork in
+ *  the lowland, so the island stops reading as one flat green sheet. The
+ *  band edges are blended with smooth noise instead of hard cutoffs. */
 function terrainColor(x, z, h, out) {
   const slope = Math.abs(terrainHeight(x + 8, z) - h) + Math.abs(terrainHeight(x, z + 8) - h);
+  const n = fbm(x * 6 + 31, z * 6 + 17);          // fine variation 0..1
+  const patch = noise2(x * 0.0011 + 5, z * 0.0011 + 11); // farmland patchwork
+  const jitter = 0.9 + n * 0.2;                    // ±10% brightness
   if (h < 4) out.setRGB(0.85, 0.76, 0.55);            // beach sand
-  else if (h < 60) out.setRGB(0.32, 0.55, 0.25);     // lowland green
+  else if (h < 60) {
+    // Lowland: meadow green, with warm farmland patches where patch is high.
+    const t = clamp((patch - 0.45) * 3, 0, 1);
+    const r = 0.32 * (1 - t) + 0.62 * t;
+    const g = 0.55 * (1 - t) + 0.52 * t;
+    const b = 0.25 * (1 - t) + 0.24 * t;
+    out.setRGB(r, g, b);
+  }
   else if (h < 180) out.setRGB(0.16, 0.38, 0.16);    // forest
   else if (h < 340) out.setRGB(0.45, 0.38, 0.30);    // rock
   else out.setRGB(0.92, 0.90, 0.88);                 // summit snow
+  // Blend the band edges so the colour steps don't read as contour lines.
+  if (h >= 55 && h < 70) {
+    const t = (h - 55) / 15;
+    out.setRGB(
+      0.32 * (1 - t) + 0.16 * t,
+      0.55 * (1 - t) + 0.38 * t,
+      0.25 * (1 - t) + 0.16 * t);
+  }
+  out.r *= jitter; out.g *= jitter; out.b *= jitter;
   if (slope > 14 && h > 60) out.setRGB(0.42, 0.36, 0.30);
   // Volcano crater: dark ash near the peak.
   const m = WORLD.mountain;
@@ -147,6 +197,36 @@ export function updatePapi(meshes, state) {
   });
 }
 
+/** Sea texture: soft light streaks on blue, drawn once on a canvas and
+ *  scrolled by the renderer for shimmer. Deterministic (fixed seed). */
+function makeSeaTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#1a5f8a';
+  ctx.fillRect(0, 0, 256, 256);
+  const srng = mulberry32(20261126);
+  for (let i = 0; i < 46; i++) {
+    const x = srng() * 256, y = srng() * 256;
+    const len = 30 + srng() * 70, w = 2 + srng() * 5;
+    const grad = ctx.createLinearGradient(x, y, x + len, y + w);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.5, 'rgba(190,225,245,' + (0.10 + srng() * 0.16) + ')');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-0.5 + srng() * 0.3);
+    ctx.fillRect(0, 0, len, w);
+    ctx.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(24, 24);
+  return tex;
+}
+
 export function buildWorld(scene) {
   const group = new THREE.Group();
   group.name = 'MerapiIsland';
@@ -171,10 +251,11 @@ export function buildWorld(scene) {
   terrain.name = 'Terrain';
   group.add(terrain);
 
-  // --- Sea ---
+  // --- Sea (v4: streaked canvas texture, scrolled by the renderer) ---
+  const seaTex = makeSeaTexture();
   const sea = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD.size * 3, WORLD.size * 3),
-    new THREE.MeshPhongMaterial({ color: 0x1a5f8a, shininess: 120, specular: 0x88bbdd, transparent: true, opacity: 0.94 }));
+    new THREE.MeshPhongMaterial({ map: seaTex, shininess: 120, specular: 0x88bbdd, transparent: true, opacity: 0.94 }));
   sea.rotation.x = -Math.PI / 2;
   sea.position.y = 0.5;
   sea.name = 'Sea';
@@ -237,21 +318,32 @@ export function buildWorld(scene) {
   group.add(makeRunway(WORLD.strip2, true, 'parang')); // Parangtritis is lit now — a real destination
 
   // --- Town: instanced houses with lit windows at dusk/night ---
+  // v4: three wall/roof colour variants so the town stops being one cream
+  // block with one brown roof repeated 90 times.
   const houseGeo = new THREE.BoxGeometry(14, 9, 12);
-  const houseMat = new THREE.MeshLambertMaterial({ color: 0xe8dcc8 });
-  const roofMat = new THREE.MeshLambertMaterial({ color: 0x8a4a3a });
+  const houseMats = [
+    new THREE.MeshLambertMaterial({ color: 0xe8dcc8 }),
+    new THREE.MeshLambertMaterial({ color: 0xdcc8a8 }),
+    new THREE.MeshLambertMaterial({ color: 0xc8d4dc }),
+  ];
+  const roofMats = [
+    new THREE.MeshLambertMaterial({ color: 0x8a4a3a }),
+    new THREE.MeshLambertMaterial({ color: 0x6a4a5a }),
+    new THREE.MeshLambertMaterial({ color: 0x4a5a6a }),
+  ];
   const winMat = new THREE.MeshBasicMaterial({ color: 0xffd27a });
   const town = new THREE.Group();
   town.name = 'Town';
   function addHouse(tx, tz, scale) {
     const h = terrainHeight(tx, tz);
     if (h < 3) return;
-    const house = new THREE.Mesh(houseGeo, houseMat);
+    const variant = Math.floor(rng() * 3);
+    const house = new THREE.Mesh(houseGeo, houseMats[variant]);
     house.position.set(tx, h + 4.5, tz);
     house.rotation.y = rng() * Math.PI;
     house.scale.setScalar(scale);
     town.add(house);
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(10, 5, 4), roofMat);
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(10, 5, 4), roofMats[variant]);
     roof.position.set(tx, h + 11 * house.scale.y, tz);
     roof.rotation.y = Math.PI / 4 + house.rotation.y;
     roof.scale.setScalar(house.scale.x);
@@ -280,11 +372,12 @@ export function buildWorld(scene) {
   beacon.add(lamp);
   group.add(beacon);
 
-  // --- Forest: instanced cones ---
+  // --- Forest: instanced cones, v4 with per-tree colour variation ---
   const treeGeo = new THREE.ConeGeometry(7, 22, 6);
-  const treeMat = new THREE.MeshLambertMaterial({ color: 0x1d4d1f });
+  const treeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
   const trees = new THREE.InstancedMesh(treeGeo, treeMat, 420);
   const dummy = new THREE.Object3D();
+  const treeCol = new THREE.Color();
   let placed = 0;
   for (let i = 0; i < 900 && placed < 420; i++) {
     const tx = (rng() - 0.5) * WORLD.size * 0.9;
@@ -295,13 +388,20 @@ export function buildWorld(scene) {
     dummy.scale.setScalar(0.7 + rng() * 1.1);
     dummy.rotation.y = rng() * Math.PI;
     dummy.updateMatrix();
-    trees.setMatrixAt(placed++, dummy.matrix);
+    trees.setMatrixAt(placed, dummy.matrix);
+    // Vary the green per tree: deep pine to yellow-green.
+    const t = rng();
+    treeCol.setRGB(0.10 + t * 0.10, 0.24 + t * 0.14, 0.10 + t * 0.05);
+    trees.setColorAt(placed, treeCol);
+    placed += 1;
   }
   trees.count = placed;
+  if (trees.instanceColor) trees.instanceColor.needsUpdate = true;
   trees.name = 'Forest';
   group.add(trees);
 
-  // --- Volcano smoke column ---
+  // --- Volcano smoke column (returned live so the renderer can raise it) ---
+  const smoke = [];
   const smokeMat = new THREE.MeshLambertMaterial({ color: 0x666660, transparent: true, opacity: 0.55 });
   for (let i = 0; i < 7; i++) {
     const puff = new THREE.Mesh(new THREE.SphereGeometry(26 + i * 9, 8, 8), smokeMat);
@@ -309,17 +409,23 @@ export function buildWorld(scene) {
     puff.scale.y = 0.6;
     puff.name = 'VolcanoSmoke';
     group.add(puff);
+    smoke.push(puff);
   }
 
-  // --- Clouds: flattened white blobs drifting slowly ---
-  const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
+  // --- Clouds: flattened white blobs drifting slowly, v4 in 3 opacities ---
+  const cloudMats = [
+    new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }),
+    new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 }),
+    new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }),
+  ];
   const clouds = new THREE.Group();
   clouds.name = 'Clouds';
   for (let i = 0; i < 26; i++) {
     const cl = new THREE.Group();
     const n = 3 + Math.floor(rng() * 3);
+    const mat = cloudMats[i % 3];
     for (let j = 0; j < n; j++) {
-      const puff = new THREE.Mesh(new THREE.SphereGeometry(18 + rng() * 22, 8, 8), cloudMat);
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(18 + rng() * 22, 8, 8), mat);
       puff.position.set((rng() - 0.5) * 90, (rng() - 0.5) * 8, (rng() - 0.5) * 30);
       puff.scale.y = 0.45;
       cl.add(puff);
@@ -330,7 +436,7 @@ export function buildWorld(scene) {
   group.add(clouds);
 
   scene.add(group);
-  return { group, clouds, papi };
+  return { group, clouds, papi, sea, smoke, trees };
 }
 
 /** Ring gate positions for the ring course / race (fixed, deterministic).
@@ -343,7 +449,10 @@ export function ringPositions() {
   ];
 }
 
-/** Build glowing ring gates; returns array of meshes. */
+/** Build glowing ring gates; returns array of meshes.
+ *  v4: each ring carries a soft glow sprite as its first child — the
+ *  renderer shows it only on the NEXT gate, so the target reads through
+ *  the haze without adding any new geometry to the course. */
 export function buildRings(scene, positions, radius = 26) {
   const rings = [];
   const geo = new THREE.TorusGeometry(radius, 2.2, 10, 40);
@@ -355,6 +464,13 @@ export function buildRings(scene, positions, radius = 26) {
     const prev = positions[Math.max(0, i - 1)];
     ring.rotation.y = Math.atan2(p[0] - prev[0], p[2] - prev[2]);
     ring.name = 'RingGate' + (i + 1);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffc233, transparent: true, opacity: 0.55,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    glow.scale.set(90, 90, 1);
+    glow.visible = false;
+    ring.add(glow);
     scene.add(ring);
     rings.push(ring);
   });

@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v3 — HUD: altitude/speed/heading, compass strip, minimap
+// MERAPI AIRMAIL v4 — HUD: altitude/speed/heading, compass strip, minimap
 // with named places, mission + route panel, approach guidance, ATC chatter,
 // analog dials (turn / attitude / VSI), gate banner; plus title / briefing /
 // results / logbook menus. The logbook shows career totals, recent flights
@@ -7,6 +7,15 @@
 // v3 adds GeoFS material: a TRIM box and an AUTOPILOT box in the top row,
 // and a GLIDE + PAPI row in the approach panel (the PAPI dots mirror the
 // 3D lights beside the destination threshold).
+// v4 (UI feel): the v3 numbers JUMPED every frame — alt/speed/heading were
+// set raw from flight state, needles snapped, the compass strip ticked in
+// 1-degree steps, and every banner appeared instantly. v4 eases all of it:
+// displayed values glide toward the true values (frame-rate independent),
+// the compass scrolls on the fractional heading, dial needles sweep, the
+// gate banner pops, the message bar slides in, and ATC lines fade in.
+// v4 perf note: no backdrop blur anywhere in the HUD — the blur halved the
+// frame rate in software rendering, so the soft look comes from gradients,
+// radii and shadows alone.
 import { MISSIONS, MEDALS, AIRFIELDS, PLACES, WIND_FROM_DEG, feet, knots, formatTime, runwayHeadingDeg, windComponents } from './config.js';
 import { distanceTo } from './flight.js';
 import { gateProgress } from './missions.js';
@@ -35,6 +44,15 @@ const ATC_LINES = {
     'MERAPI TOWER: PK-MAIL 7, welcome home. Nice landing — the mail is safe.',
   ],
 };
+
+/** Frame-rate independent easing factor: k is the ~63% convergence rate (per second). */
+function easeFactor(dt, k) { return 1 - Math.exp(-k * dt); }
+
+/** Ease an angle toward a target along the shortest arc (degrees). */
+function easeAngle(cur, target, f) {
+  let d = ((target - cur + 540) % 360) - 180;
+  return (cur + d * f + 360) % 360;
+}
 
 export function buildHud() {
   const root = document.getElementById('hud');
@@ -101,6 +119,11 @@ export function buildHud() {
     dials: document.getElementById('dials'),
     help: document.getElementById('hud-help'),
     atcTimer: 0, atcIdx: 0, atcShown: [],
+    // v4: eased display state — what the player actually sees glides
+    // toward the true values instead of snapping to them every frame.
+    disp: { alt: 0, spd: 0, hdg: 0, thr: 0 },
+    dial: { roll: 0, pitch: 0, vs: 0 },
+    _lastMsg: '', _lastGate: '',
   };
 }
 
@@ -133,16 +156,32 @@ function papiDotsHtml(dots) {
   return dots.map((d) => '<span style="color:' + (d ? '#fff6d8' : '#ff2a1e') + '">●</span>').join('');
 }
 
+/** Re-trigger a CSS animation on an element (remove, reflow, re-add). */
+function retriggerAnim(el, cls) {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
 /** Update the HUD from flight + mission state, once per frame.
  *  opts: { log, dt, instruments, cameraMode, autopilot, glide } */
 export function updateHud(hud, flight, mission, cameraMode, opts) {
   const o = opts || {};
   const dt = o.dt || 0.016;
-  hud.alt.textContent = feet(flight.y) + ' ft';
-  hud.spd.textContent = knots(flight.speed) + ' kt';
-  const hdgDeg = Math.round(((flight.heading * 180 / Math.PI) % 360 + 360) % 360);
+  // v4: ease the displayed numbers toward the true values, so the top row
+  // glides instead of flickering a new integer every frame.
+  const f = easeFactor(dt, 8);
+  const d = hud.disp;
+  d.alt += (feet(flight.y) - d.alt) * f;
+  d.spd += (knots(flight.speed) - d.spd) * f;
+  d.thr += (flight.throttle * 100 - d.thr) * f;
+  const hdgDegTrue = ((flight.heading * 180 / Math.PI) % 360 + 360) % 360;
+  d.hdg = easeAngle(d.hdg, hdgDegTrue, easeFactor(dt, 10));
+  const hdgDeg = Math.round(d.hdg) % 360;
+  hud.alt.textContent = Math.round(d.alt) + ' ft';
+  hud.spd.textContent = Math.round(d.spd) + ' kt';
   hud.hdg.textContent = String(hdgDeg).padStart(3, '0') + '°';
-  hud.thr.textContent = Math.round(flight.throttle * 100) + '%';
+  hud.thr.textContent = Math.round(d.thr) + '%';
   hud.fuel.textContent = Math.round(flight.fuel) + '%';
   hud.fuel.style.color = flight.fuel < 20 ? '#ff5a4e' : '';
   const windKt = Math.round((flight.wind || 2) * 1.94384);
@@ -167,13 +206,19 @@ export function updateHud(hud, flight, mission, cameraMode, opts) {
     const prog = gateProgress(mission);
     const next = mission.gates[prog.next];
     if (next && !mission.finished) {
-      const d = Math.round(distanceTo(flight, next.x, next.y, next.z));
-      hud.gateLine.textContent = 'NEXT GATE ' + (prog.next + 1) + '/' + prog.total + '  ·  ' + d + ' m';
-      hud.gate.textContent = 'GATE ' + (prog.next + 1) + ' — ' + d + ' m';
+      const dist = Math.round(distanceTo(flight, next.x, next.y, next.z));
+      hud.gateLine.textContent = 'NEXT GATE ' + (prog.next + 1) + '/' + prog.total + '  ·  ' + dist + ' m';
+      const gateTxt = 'GATE ' + (prog.next + 1) + ' — ' + dist + ' m';
+      if (gateTxt !== hud._lastGate) {
+        hud._lastGate = gateTxt;
+        hud.gate.textContent = gateTxt;
+        retriggerAnim(hud.gate, 'pop');
+      }
       hud.gate.style.display = 'block';
     } else {
       hud.gateLine.textContent = mission.finished ? 'ROUTE COMPLETE' : 'LAND AT ' + mission.dest.name.toUpperCase();
       hud.gate.style.display = 'none';
+      hud._lastGate = '';
     }
     // Approach guidance: destination field, runway, distance, wind components,
     // plus the v3 glide-slope row (PAPI dots mirror the threshold lights).
@@ -183,13 +228,14 @@ export function updateHud(hud, flight, mission, cameraMode, opts) {
     const wc = windComponents(rwyDeg, flight.wind || 2);
     const headTxt = wc.head >= 0 ? '+' + wc.head : String(wc.head);
     const glide = o.glide || { dots: [1, 1, 0, 0], label: '—' };
+    const glideColor = glide.label === 'ON SLOPE' ? '#39ff88' : glide.label === '—' ? '#cfe3ee' : '#ffc233';
     hud.approachBody.innerHTML =
       '<div class="ap-row"><span>FIELD</span><b>' + dest.name + '</b></div>' +
       '<div class="ap-row"><span>RUNWAY</span><b>' + dest.rwy + ' · ' + String(rwyDeg).padStart(3, '0') + '°</b></div>' +
       '<div class="ap-row"><span>DISTANCE</span><b>' + (distM >= 1000 ? (distM / 1000).toFixed(1) + ' km' : distM + ' m') + '</b></div>' +
       '<div class="ap-row"><span>HEADWIND</span><b>' + headTxt + ' kt</b></div>' +
       '<div class="ap-row"><span>CROSSWIND</span><b>' + wc.cross + ' kt ' + wc.crossSide + '</b></div>' +
-      '<div class="ap-row"><span>GLIDE</span><b>' + glide.label + '</b></div>' +
+      '<div class="ap-row"><span>GLIDE</span><b style="color:' + glideColor + '">' + glide.label + '</b></div>' +
       '<div class="ap-row"><span>PAPI</span><b>' + papiDotsHtml(glide.dots) + '</b></div>';
   } else {
     hud.route.textContent = '';
@@ -208,23 +254,35 @@ export function updateHud(hud, flight, mission, cameraMode, opts) {
   if (flight.y < 60 && !flight.onGround && flight.speed > 40) warns.push('TERRAIN');
   hud.warnings.textContent = warns.join('   ');
   hud.warnings.style.display = warns.length ? 'block' : 'none';
-  if (mission && mission.message) hud.message.textContent = mission.message;
+  if (mission && mission.message) {
+    if (mission.message !== hud._lastMsg) {
+      hud._lastMsg = mission.message;
+      hud.message.textContent = mission.message;
+      retriggerAnim(hud.message, 'slide');
+    }
+  }
 
-  // Compass strip.
+  // Compass strip — v4: scroll on the FRACTIONAL heading so the ticks
+  // glide instead of stepping 1 degree at a time.
   const ctx = hud.compass.getContext('2d');
   const W = hud.compass.width, H = hud.compass.height;
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(10,16,24,0.55)';
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgba(12,20,30,0.72)');
+  grad.addColorStop(1, 'rgba(8,14,22,0.55)');
+  ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
-  const deg = hdgDeg;
+  const degF = d.hdg;
   ctx.font = 'bold 15px monospace';
   ctx.textAlign = 'center';
-  for (let d = -60; d <= 60; d += 15) {
-    const a = (deg + d + 360) % 360;
-    const x = W / 2 + d * 4;
-    const cardinal = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[a];
+  const stepDeg = 15;
+  const start = Math.floor((degF - 60) / stepDeg) * stepDeg;
+  for (let a = start; a <= degF + 60; a += stepDeg) {
+    const an = ((a % 360) + 360) % 360;
+    const x = W / 2 + (a - degF) * 4;
+    const cardinal = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[an];
     ctx.fillStyle = cardinal ? '#ffd34d' : '#cfe3ee';
-    ctx.fillText(cardinal || String(a), x, 22);
+    ctx.fillText(cardinal || String(an), x, 22);
     ctx.fillRect(x - 1, 26, 2, 6);
   }
   ctx.fillStyle = '#ff5a4e';
@@ -234,14 +292,18 @@ export function updateHud(hud, flight, mission, cameraMode, opts) {
   // Analog dials row (chase view only — the cockpit has its own 3D panel).
   const showDials = (o.instruments !== false) && cameraMode === 'chase';
   hud.dials.style.display = showDials ? 'block' : 'none';
-  if (showDials) drawDials(hud.dials, flight);
+  if (showDials) drawDials(hud.dials, flight, hud.dial, dt);
 }
 
 function drawMinimap(canvas, flight, mission) {
   const ctx = canvas.getContext('2d');
   const S = canvas.width;
   ctx.clearRect(0, 0, S, S);
-  ctx.fillStyle = 'rgba(10,16,24,0.55)';
+  // Soft glass disc: radial gradient instead of one flat fill.
+  const disc = ctx.createRadialGradient(S / 2, S / 2 - 12, 8, S / 2, S / 2, S / 2);
+  disc.addColorStop(0, 'rgba(20,34,50,0.85)');
+  disc.addColorStop(1, 'rgba(8,14,22,0.6)');
+  ctx.fillStyle = disc;
   ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2); ctx.fill();
   ctx.save();
   ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2); ctx.clip();
@@ -280,39 +342,57 @@ function drawMinimap(canvas, flight, mission) {
       ctx.fillText(p.name.toUpperCase(), Math.min(px + 4, S - 62), Math.max(Math.min(pz - 4, S - 8), 10));
     }
   }
-  // Plane marker.
+  // Plane marker with a soft heading wedge.
   const px = S / 2 + (flight.x / 2100) * (S / 2);
   const pz = S / 2 + (flight.z / 2100) * (S / 2);
   ctx.save();
   ctx.translate(px, pz);
   ctx.rotate(flight.heading);
+  ctx.fillStyle = 'rgba(255, 211, 77, 0.18)';
+  ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(9, 8); ctx.lineTo(-9, 8); ctx.closePath(); ctx.fill();
   ctx.fillStyle = '#ffd34d';
   ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(5, 6); ctx.lineTo(-5, 6); ctx.closePath(); ctx.fill();
   ctx.restore();
   ctx.restore();
+  // Outer ring glow.
+  ctx.strokeStyle = 'rgba(255, 211, 77, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 3, 0, Math.PI * 2); ctx.stroke();
   ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2); ctx.stroke();
 }
 
-/** Analog dials row: turn coordinator, attitude indicator, VSI. */
-function drawDials(canvas, flight) {
+/** Analog dials row: turn coordinator, attitude indicator, VSI.
+ *  v4: needles ease toward the true values (smoothed state in `sm`),
+ *  and the faces get a glassy radial gradient + highlight instead of
+ *  one flat dark disc. */
+function drawDials(canvas, flight, sm, dt) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(8,14,22,0.72)';
-  ctx.beginPath(); ctx.roundRect(0, 0, W, H, 10); ctx.fill();
+  // Panel: soft vertical gradient + gold hairline, rounded 14px.
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, 'rgba(16,26,40,0.85)');
+  bg.addColorStop(1, 'rgba(8,14,22,0.78)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.roundRect(0, 0, W, H, 14); ctx.fill();
   ctx.strokeStyle = 'rgba(255,211,77,0.55)'; ctx.lineWidth = 1;
   ctx.stroke();
+  const f = easeFactor(dt || 0.016, 10);
+  sm.roll += (flight.roll - sm.roll) * f;
+  sm.pitch += (flight.pitch - sm.pitch) * f;
+  sm.vs += ((flight.verticalSpeed || 0) - sm.vs) * f;
   const cy = H / 2 + 6, r = 40;
   // --- Turn coordinator: bank needle + slip ball ---
   dialFace(ctx, 66, cy, r, 'TURN');
   ctx.save();
   ctx.translate(66, cy);
-  ctx.rotate(-flight.roll * 0.8);
-  ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 4;
+  ctx.rotate(-sm.roll * 0.8);
+  ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 4; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -(r - 10)); ctx.stroke();
   ctx.restore();
-  const slip = Math.max(-1, Math.min(1, Math.sin(flight.roll) * 2));
+  const slip = Math.max(-1, Math.min(1, Math.sin(sm.roll) * 2));
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(66 + slip * (r - 12), cy + r - 12, 5, 0, Math.PI * 2); ctx.fill();
   // --- Attitude indicator: horizon ball ---
@@ -320,8 +400,8 @@ function drawDials(canvas, flight) {
   ctx.save();
   ctx.beginPath(); ctx.arc(200, cy, r - 4, 0, Math.PI * 2); ctx.clip();
   ctx.translate(200, cy);
-  ctx.rotate(-flight.roll);
-  ctx.translate(0, flight.pitch * 70);
+  ctx.rotate(-sm.roll);
+  ctx.translate(0, sm.pitch * 70);
   ctx.fillStyle = '#3f7fd0'; ctx.fillRect(-r, -r * 2, r * 2, r * 2);
   ctx.fillStyle = '#7a5a34'; ctx.fillRect(-r, 0, r * 2, r * 2);
   ctx.fillStyle = '#fff'; ctx.fillRect(-r, -2, r * 2, 4);
@@ -332,21 +412,28 @@ function drawDials(canvas, flight) {
   ctx.strokeStyle = '#e8d9a8'; ctx.lineWidth = 3; ctx.stroke();
   // --- VSI: vertical speed needle + value kept inside the dial face ---
   dialFace(ctx, 334, cy, r, 'VSI');
-  const vsFrac = Math.max(-1, Math.min(1, (flight.verticalSpeed || 0) / 10));
+  const vsFrac = Math.max(-1, Math.min(1, sm.vs / 10));
   const va = Math.PI * 0.75 + ((vsFrac + 1) / 2) * Math.PI * 1.5;
   ctx.save();
   ctx.translate(334, cy);
-  ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 4;
+  ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 4; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(va) * (r - 10), Math.sin(va) * (r - 10)); ctx.stroke();
   ctx.fillStyle = '#e8f2f8'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
-  ctx.fillText((flight.verticalSpeed >= 0 ? '+' : '') + (flight.verticalSpeed || 0).toFixed(1), 0, r - 16);
+  ctx.fillText((sm.vs >= 0 ? '+' : '') + sm.vs.toFixed(1), 0, r - 16);
   ctx.restore();
 }
 
 function dialFace(ctx, cx, cy, r, label) {
+  // Glass face: radial gradient, lighter at the top, plus a soft highlight.
+  const g = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.4, r * 0.1, cx, cy, r);
+  g.addColorStop(0, '#232e3d');
+  g.addColorStop(0.7, '#12181f');
+  g.addColorStop(1, '#0a0e13');
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = '#10141a'; ctx.fill();
+  ctx.fillStyle = g; ctx.fill();
   ctx.lineWidth = 3; ctx.strokeStyle = '#e8d9a8'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, r - 6, Math.PI * 1.15, Math.PI * 1.6);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 5; ctx.stroke();
   ctx.fillStyle = '#e8f2f8'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center';
   ctx.fillText(label, cx, cy - r + 14);
 }

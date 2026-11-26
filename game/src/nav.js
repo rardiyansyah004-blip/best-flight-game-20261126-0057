@@ -1,10 +1,19 @@
-// MERAPI AIRMAIL v3 — navigation panel + autopilot, in the spirit of GeoFS.
+// MERAPI AIRMAIL v4 — navigation panel + autopilot, in the spirit of GeoFS.
 // GeoFS's signature flow is its nav panel (N): a live chart with runways and
 // navaids plus an autopilot (A) that holds heading and altitude. This module
 // is the same idea rebuilt for our island, from static files only: the chart
 // is drawn in code, the METAR line is generated from the mission weather,
 // and the autopilot steers the real flight model toward the next gate.
 // No GeoFS code, assets, names or text are used here.
+// v4 (UI feel): the v3 drawer was a hard-edged flat dark box with a 1px
+// border and no motion — it appeared instantly and looked pasted on. v4
+// gives it a gradient + soft shadow + 16px radius, a slide/fade-in on every
+// open (CSS animations re-run when the panel flips from display:none to
+// block), button press/hover states, and a polished chart (the island is a
+// radial gradient now, the plane marker glows). Same data, same layout,
+// same buttons — the drawer just lands softer.
+// v4 perf note: the drawer uses a gradient + shadow, NOT backdrop blur —
+// the blur halved the frame rate in software rendering, so it stays out.
 import { AIRFIELDS, PLACES, WIND_FROM_DEG, clamp, wrapAngle } from './config.js';
 import { gateProgress } from './missions.js';
 
@@ -26,18 +35,24 @@ export function metarFor(weather, fieldName) {
 export function buildNavPanel() {
   const style = document.createElement('style');
   style.textContent = `
+    @keyframes navIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
     #nav-panel { position: absolute; right: 14px; top: 388px; width: 300px;
-      background: rgba(8, 14, 22, 0.88); border: 1px solid rgba(255, 211, 77, 0.55);
-      border-radius: 8px; padding: 8px 10px; pointer-events: auto; display: none; z-index: 6; }
+      background: linear-gradient(160deg, rgba(10,16,24,0.93), rgba(8,12,20,0.84));
+      border: 1px solid rgba(255, 211, 77, 0.55);
+      border-radius: 16px; padding: 10px 12px; pointer-events: auto; display: none; z-index: 6;
+      box-shadow: 0 14px 40px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.09);
+       animation: navIn 0.25s ease-out; }
     #nav-panel-title { font-size: 11px; letter-spacing: 2px; color: #ffd34d; font-weight: 800; margin-bottom: 6px; }
-    #nav-chart { display: block; border-radius: 6px; border: 1px solid rgba(255,255,255,0.25); background: #0c1a26; }
+    #nav-chart { display: block; border-radius: 10px; border: 1px solid rgba(255,255,255,0.25); background: #0c1a26; }
     #nav-metar { font-family: monospace; font-size: 11px; color: #9fc3d8; margin-top: 6px; line-height: 1.5; word-break: break-word; }
     #nav-ap-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
     #nav-ap-status { font-family: monospace; font-size: 13px; font-weight: 800; color: #cfe3ee; }
     #nav-ap-status.on { color: #39ff88; }
-    #nav-ap-btn { background: #ffd34d; color: #1a1405; border: none; border-radius: 6px;
-      font-size: 13px; font-weight: 800; padding: 6px 14px; cursor: pointer; letter-spacing: 1px; }
-    #nav-ap-btn:hover { filter: brightness(1.1); }
+    #nav-ap-btn { background: #ffd34d; color: #1a1405; border: none; border-radius: 8px;
+      font-size: 13px; font-weight: 800; padding: 6px 14px; cursor: pointer; letter-spacing: 1px;
+      transition: transform 0.15s ease, filter 0.15s ease; }
+    #nav-ap-btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    #nav-ap-btn:active { transform: scale(0.96); }
     #nav-hint { font-size: 11px; color: rgba(238, 244, 248, 0.7); margin-top: 6px; }`;
   document.head.appendChild(style);
   const root = document.getElementById('hud');
@@ -77,8 +92,12 @@ export function drawNavChart(canvas, flight, mission) {
     const px = (r / 2100) * (W / 2 - 8);
     ctx.beginPath(); ctx.ellipse(W / 2, H / 2, px, px * (H / W), 0, 0, Math.PI * 2); ctx.stroke();
   }
-  // Island blob, volcano, town.
-  ctx.fillStyle = '#3d7a3a';
+  // Island blob: radial gradient, bright heart fading to deep green at the coast.
+  const islandGrad = ctx.createRadialGradient(W / 2 + 4, H / 2 - 3, 20, W / 2 + 4, H / 2 - 3, 110);
+  islandGrad.addColorStop(0, '#5da14a');
+  islandGrad.addColorStop(0.7, '#3d7a3a');
+  islandGrad.addColorStop(1, '#2a5a2e');
+  ctx.fillStyle = islandGrad;
   ctx.beginPath(); ctx.ellipse(W / 2 + 4, H / 2 - 3, 96, 72, 0.3, 0, Math.PI * 2); ctx.fill();
   const [vx, vz] = toChart(620, -540);
   ctx.fillStyle = '#8a6a4a';
@@ -134,9 +153,11 @@ export function drawNavChart(canvas, flight, mission) {
     const [px, pz] = toChart(p.x, p.z);
     ctx.fillText(p.name.toUpperCase(), px + 4, pz - 4);
   }
-  // Plane marker + heading wedge.
+  // Plane marker + heading wedge: gold with a soft glow so it reads at a glance.
   const [px, pz] = toChart(flight.x, flight.z);
   ctx.save();
+  ctx.shadowColor = '#ffd34d';
+  ctx.shadowBlur = 12;
   ctx.translate(px, pz);
   ctx.rotate(flight.heading);
   ctx.fillStyle = '#ffd34d';
