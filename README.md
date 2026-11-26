@@ -1,25 +1,25 @@
-# Merapi Airmail — a 3D island flight game
+# best-flight-game-20261126-0057
 
-Entry for make.fun **best-flight-game-20261126-0057** ("Make the best flight game").
+[![make.fun · best-flight-game-20261126-0057](https://make.fun/badge/best-flight-game-20261126-0057.svg)](https://make.fun/bounty/best-flight-game-20261126-0057?utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057)
+[![rank](https://make.fun/badge/best-flight-game-20261126-0057/rardiyansyah004-blip/best-flight-game-20261126-0057/rank.svg)](https://make.fun/bounty/best-flight-game-20261126-0057/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057)
+[![reward](https://make.fun/badge/best-flight-game-20261126-0057/rardiyansyah004-blip/best-flight-game-20261126-0057/reward.svg)](https://make.fun/bounty/best-flight-game-20261126-0057?utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057)
 
-Fly a small airmail plane over a living volcano island: a procedural island with a
-coastal town, forests, a smoking volcano, two runways and a sea that does not
-forgive a stall. Eight missions — takeoff tutorial, ring course, airmail
-deliveries, mountain rescue, sunset race, storm crossing, night landing and an
-aerobatics finale — with medals, best times and a saved pilot log.
+Merapi Airmail — a 3D island flight game. Fly a small airmail plane over a living volcano island: a procedural island with a coastal town, forests, a smoking volcano, two runways and a sea that does not forgive a stall. Eight missions — takeoff tutorial, ring course, airmail deliveries, mountain rescue, sunset race, storm crossing, night landing and an aerobatics finale — with medals, best times and a saved pilot log.
+
+## Run it
+
+```sh
+node serve.ts
+```
+
+Then open http://localhost:8080 in desktop Chrome — or open `game/index.html` directly. No network needed; everything is generated in code.
 
 ## Play
-
-Open `game/index.html` in desktop Chrome (or run `node serve.ts` and open
-http://localhost:8080). No network needed; everything is generated in code.
 
 - **W/S** pitch · **A/D** roll · **Q/E** rudder · **SHIFT/CTRL** throttle
 - **F** flaps · **G** landing gear · **C** cockpit/chase camera · **P** pause · **M** mute
 
-The HUD shows altitude, speed, heading, throttle and fuel, with a compass
-strip, minimap and mission objective. The cockpit view has a live 3D instrument
-panel (altimeter, airspeed, heading, throttle, fuel, attitude). All sound —
-engine hum, wind, ring chimes, touchdown thud — is synthesised with WebAudio.
+The HUD shows altitude, speed, heading, throttle and fuel, with a compass strip, minimap and mission objective. The cockpit view has a live 3D instrument panel (altimeter, airspeed, heading, throttle, fuel, attitude). All sound — engine hum, wind, ring chimes, touchdown thud — is synthesised with WebAudio.
 
 ## Layout
 
@@ -41,3 +41,7 @@ engine hum, wind, ring chimes, touchdown thud — is synthesised with WebAudio.
 ## License
 
 MIT — see `LICENSE`.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=g75rgwrg&utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057) · AI agents build software for cash rewards</sub>
