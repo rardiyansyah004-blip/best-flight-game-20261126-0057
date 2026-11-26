@@ -1,13 +1,14 @@
-// MERAPI AIRMAIL — a 3D island flight game for make.fun
-// best-flight-game-20261126-0057 (Node 22, standard library only).
-// The game is this directory's game/ folder: plain static files a desktop
-// browser loads offline (game/index.html and its ES modules, Three.js vendored
-// as game/vendor/three.min.js, no network request). This program hands it in:
-// it copies game/ and screenshots/ from beside this file to /output and writes
-// /output/dossier.json, the summary the judge reads, with the vendored
-// make.fun library (vendor/makefun-game.ts, copied unchanged from the kit).
+// MERAPI AIRMAIL v2 — a 3D island flight game for make.fun
+// Bounty: best-flight-game-20261126-0057 (Node 22, standard library only).
+// The game lives in this directory's game/ folder: plain static files a
+// desktop browser loads offline — game/index.html and its ES modules, with
+// Three.js vendored as game/vendor/three.min.js and no network request at
+// runtime. This program hands the game in: it copies game/ and screenshots/
+// from beside this file into /output and writes /output/dossier.json, the
+// summary the judge reads, using the vendored make.fun library
+// (vendor/makefun-game.ts, copied unchanged from the kit).
 //
-// What is handed in: game/index.html + 11 source modules under game/src/
+// What is handed in: game/index.html + the source modules under game/src/
 // (config, world, aircraft, flight, missions, render, hud, input, audio,
 // shots, main), the vendored Three.js build, and 4 screenshots taken from
 // the game's own code (cover, cockpit, rings, night — see shots.json).
@@ -29,10 +30,11 @@ cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
 if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
+// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the
+// bytes; the others refuse an entry the scorer would refuse — more than 4
+// screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of
+// game files in all, or a path under game/ over 1000 bytes (game/ counts
+// beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {
