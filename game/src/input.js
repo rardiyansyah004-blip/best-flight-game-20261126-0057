@@ -4,6 +4,12 @@
 // H hide UI, I instruments toggle.
 // v3 adds Home/End elevator trim and Delete trim reset (GeoFS parity), plus
 // N nav chart and A autopilot in flight (handled in main.js).
+// v5.17 Tier 3: Digit1-4 are the direct camera-mode picks (1 chase,
+// 2 cockpit, 3 wingtip, 4 flyby). They MUST be edge-triggered, not
+// level-read, because at ~2 fps in software rendering a brief key press
+// can fall between frames; the pressed map holds it until the loop
+// consumes it. (Found by the Tier 3 camera probe: the Digit keys were
+// wired in main.js but never registered here, so 1-4 did nothing.)
 export function createInput() {
   const input = {
     keys: {},
@@ -24,10 +30,11 @@ export function createInput() {
     Space: 'brake',
   };
 
-  // Edge-triggered keys (flight toggles + v2 menu keys + v3 trim keys).
+  // Edge-triggered keys (flight toggles + v2 menu keys + v3 trim keys
+  // + v5.17 Tier 3 camera picks).
   const EDGE_KEYS = ['KeyF', 'KeyG', 'KeyC', 'KeyP', 'KeyM', 'KeyR',
     'KeyB', 'KeyN', 'KeyL', 'KeyH', 'KeyI', 'KeyA', 'Escape', 'Enter',
-    'Home', 'End', 'Delete'];
+    'Home', 'End', 'Delete', 'Digit1', 'Digit2', 'Digit3', 'Digit4'];
 
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
