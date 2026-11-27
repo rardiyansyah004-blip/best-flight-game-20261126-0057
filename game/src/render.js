@@ -1,5 +1,5 @@
-// MERAPI AIRMAIL v4 — renderer: scene, golden-hour / day / night lighting,
-// sky dome, chase + cockpit cameras, rain, and the per-frame camera follow.
+// MERAPI AIRMAIL v5 — renderer: scene, golden-hour / day / night lighting,
+// sky dome, chase + cockpit + orbit cameras, rain, and the per-frame camera follow.
 // v2: ring gates are repositioned per mission (updateRings) so the gates
 // follow the mission's route instead of one fixed course. The chase camera
 // SNAPS to its target when far away (mission start, screenshot staging)
@@ -16,6 +16,12 @@
 // v4 perf note: the sun sprites stay at full size — measured, the frame
 // rate in software rendering matches v3 once the HUD backdrop blur is
 // gone, so the glow costs nothing worth removing.
+// v5 adds the third camera GeoFS cycles to (C): a free orbit camera that
+// slowly circles the plane at a fixed distance, always looking at it —
+// the view for admiring the aircraft and the island, and for watching the
+// autopilot fly the route from outside. Chase and cockpit are untouched;
+// the orbit is one new branch in updateScene plus one angle on the
+// renderer state, and it costs nothing per frame beyond the lookAt.
 import * as THREE from 'three';
 import { buildWorld, buildRings, ringPositions } from './world.js';
 import { buildAircraft, createPanelTexture, drawPanel, buildCockpitPanel } from './aircraft.js';
@@ -179,6 +185,8 @@ export function createRenderer() {
     lookInit: false,
     rollSmooth: 0,
     fovSmooth: 62,
+    // v5 orbit camera state: the angle the free camera sits at around the plane.
+    orbitAngle: 0,
   };
 }
 
@@ -317,6 +325,34 @@ export function updateScene(r, flight, cameraMode, dt, time) {
     r.panelMesh.rotation.x = -0.35 + flight.pitch;
     r.panelMesh.rotation.z = -flight.roll;
     plane.visible = false;
+  } else if (cameraMode === 'orbit') {
+    // v5 orbit camera (GeoFS free/orbit view, C cycles to it): the camera
+    // slowly circles the plane at a fixed distance and height, always
+    // looking at the aircraft — the view for watching the plane and the
+    // island from outside, and for seeing the autopilot fly the route.
+    // The plane stays visible and the cockpit panel stays hidden, like the
+    // chase view. The angle advances with the frame delta (game time, not
+    // wall time), so a paused game holds its frame and the staged shots —
+    // which never use this mode — are unaffected. One full circle takes
+    // about 52 seconds at 0.12 rad/s.
+    plane.visible = true;
+    r.panelMesh.visible = false;
+    r.orbitAngle += dt * 0.12;
+    const R = 55, H = 16;
+    r.camera.position.set(
+      flight.x + Math.sin(r.orbitAngle) * R,
+      flight.y + H,
+      flight.z + Math.cos(r.orbitAngle) * R,
+    );
+    r.camera.up.copy(up);
+    r.camera.lookAt(flight.x, flight.y + 1, flight.z);
+    r.lookInit = false;
+    // Orbit holds the base FOV, like the cockpit.
+    r.fovSmooth += (62 - r.fovSmooth) * Math.min(1, dt * 3);
+    if (Math.abs(r.camera.fov - r.fovSmooth) > 0.01) {
+      r.camera.fov = r.fovSmooth;
+      r.camera.updateProjectionMatrix();
+    }
   } else {
     plane.visible = true;
     r.panelMesh.visible = false;

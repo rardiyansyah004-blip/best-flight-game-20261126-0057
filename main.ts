@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v4 — a 3D island flight game for make.fun
+// MERAPI AIRMAIL v5 — a 3D island flight game for make.fun
 // Bounty: best-flight-game-20261126-0057 (Node 22, standard library only).
 // The game lives in this directory's game/ folder: plain static files a
 // desktop browser loads offline — game/index.html and its ES modules, with
@@ -27,6 +27,15 @@
 // Backdrop blur was tried for the HUD and removed — it halved the frame
 // rate in software rendering, so the soft look comes from gradients and
 // shadows instead.
+// v5 fixes the takeoff that never worked: the plane spawned 30 m before
+// the far runway end and rolled at the ridge north of the field; it now
+// spawns at the threshold end with the full 590 m of strip ahead, the
+// ground no longer flickers under it below flying speed, and the
+// autopilot joins the final through the final-approach fix when it is too
+// high for a direct 3-degree glide path — so a full takeoff-to-landing
+// run now completes. v5 also adds the GeoFS free/orbit camera: C cycles
+// chase/cockpit/orbit. The 4 screenshots are unchanged (the staging is
+// untouched) and every v3/v4 feature is kept.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:

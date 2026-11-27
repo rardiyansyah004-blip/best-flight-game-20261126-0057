@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v3 — game loop and state machine: title, briefing, flying,
+// MERAPI AIRMAIL v5 — game loop and state machine: title, briefing, flying,
 // paused, results, logbook. Also hosts the deterministic ?shot= scenes.
 // v2: B starts a new mission, N a free gate course, L the logbook, H hides
 // the UI, I toggles instruments; missions start on their route's origin
@@ -7,6 +7,13 @@
 // autopilot (which flies the route's gates and the 3-degree glide path),
 // Home/End trim the elevator, Delete resets trim, and PAPI lights beside
 // each threshold show the glide slope live.
+// v4 (UI feel): softer panels, eased dials, spring camera, sun, trails.
+// v5: C cycles three cameras — chase, cockpit, orbit (the GeoFS free/orbit
+// view) — and the takeoff finally works: the plane spawns at the threshold
+// end of the runway with the full strip ahead (flight.js), and the
+// autopilot joins the final through the final-approach fix when it is too
+// high for a direct glide path (nav.js), so a full takeoff-to-landing run
+// now completes instead of dying on the ridge past the runway.
 import { WORLD, MISSIONS, AIRFIELDS } from './config.js';
 import { createFlightState, stepFlight, onRunway } from './flight.js';
 import { createMission, stepMission, weatherFor, loadPilotLog, savePilotLog, medalFor, recordFlight, gateProgress } from './missions.js';
@@ -56,6 +63,17 @@ function toggleNav() {
   game.navOpen = !game.navOpen;
   nav.panel.style.display = game.navOpen ? 'block' : 'none';
   if (game.navOpen) updateNavPanel(nav, game.flight, game.mission, game.weather, game.autopilot);
+}
+
+/** Cycle the camera (C): chase -> cockpit -> orbit -> chase. The orbit
+ *  view is the v5 GeoFS-style free camera, circling the plane from
+ *  outside. The mode also shows in the mission-name bar (hud.js renders
+ *  cameraMode + ' CAM'), and the message bar names the new mode so the
+ *  switch is visible even before the bar updates. */
+function cycleCamera() {
+  game.cameraMode = game.cameraMode === 'chase' ? 'cockpit'
+    : game.cameraMode === 'cockpit' ? 'orbit' : 'chase';
+  hud.message.textContent = game.cameraMode.toUpperCase() + ' CAMERA — C to change';
 }
 
 nav.apBtn.addEventListener('click', () => {
@@ -258,7 +276,7 @@ function loop(now) {
         if (ap.gearDown) game.flight.gearDown = true;
       }
     }
-    if (input.consume('KeyC')) game.cameraMode = game.cameraMode === 'chase' ? 'cockpit' : 'chase';
+    if (input.consume('KeyC')) cycleCamera();
     if (input.consume('KeyM')) audio.toggleMute();
     const events = stepFlight(game.flight, ctrl, dt, game.weather);
     stepMission(game.mission, game.flight, events, dt);
@@ -305,4 +323,4 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // Expose a tiny debug handle for play-testing in the console.
-window.__merapi = { game, WORLD, MISSIONS, medalFor, AIRFIELDS, nav, setAutopilot, toggleNav };
+window.__merapi = { game, WORLD, MISSIONS, medalFor, AIRFIELDS, nav, setAutopilot, toggleNav, renderer: r };

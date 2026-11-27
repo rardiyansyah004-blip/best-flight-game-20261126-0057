@@ -1,9 +1,24 @@
-// MERAPI AIRMAIL v3 — shared constants, airfields, routes and tuning.
+// MERAPI AIRMAIL v5 — shared constants, airfields, routes and tuning.
 // v2 reworks the 8 missions into delivery ROUTES: every flight takes off
 // from an origin field, flies 6-8 numbered gates, and lands at a destination
 // field. All numbers are original design values for this game.
 // v3 adds GeoFS material: a navigation panel with autopilot (A), PAPI
 // glide-slope lights on both runways, and elevator trim (Home/End).
+// v4 is a UI + graphics-feel revision (rounded panels, eased dials, spring
+// camera, sun, trails, nav lights). v5 fixes the takeoff that never worked
+// — the plane spawned 30 m before the far runway end, rolling at the ridge
+// with gate 1 ~170 degrees behind it; it now spawns at the threshold end
+// with the full strip ahead — and adds the GeoFS free/orbit camera (C
+// cycles chase/cockpit/orbit). The autopilot now joins the final through
+// the final-approach fix, 800 m out on the extended centreline, when the
+// plane is too high for a direct 3-degree glide path, so a full
+// takeoff-to-landing run finally completes. v5 also lowers the circuit's
+// first gate to a climb-out altitude: the old gate 1 sat at 222 m only
+// 700 m past the threshold, and the plane climbs at most 9 m/s, so it
+// arrived ~47 m below the gate on the first pass and then orbited it at
+// 250-390 m — outside the 30 m pass radius — forever. The gate now sits
+// at 172 m on the takeoff circuit (measured), the altitude the plane
+// actually reaches there, so the first pass goes through at ~17 m.
 export const WORLD = {
   size: 4200,            // island spans -2100..2100 in x and z
   seaLevel: 0,
@@ -124,7 +139,6 @@ export function wrapAngle(a) {
 
 /** Format seconds as M:SS. */
 export function formatTime(s) {
-  if (!isFinite(s) || s === null) return '--:--';
   const m = Math.floor(s / 60), r = Math.floor(s % 60);
   return m + ':' + String(r).padStart(2, '0');
 }
@@ -156,7 +170,13 @@ export function routeGates(originId, destId, count, seed, altBase) {
       const r = 720 + (rng() - 0.5) * 160;
       gates.push({
         x: Math.round(cx + Math.cos(a) * r),
-        y: Math.round(base + Math.sin(i * 1.3) * 35 + rng() * 30),
+        // v5: the first gate is a climb-out gate at 165-175 m, not the
+        // 200-230 m of the rest — the plane leaves the runway at 7 m and
+        // climbs at most 9 m/s, so it reaches gate 1's position at ~175 m
+        // and a 222 m gate there could never be passed on the first
+        // attempt. The rng() call stays in the same place so gates 2..n
+        // are byte-identical to v4.
+        y: Math.round(i === 0 ? 165 + rng() * 10 : base + Math.sin(i * 1.3) * 35 + rng() * 30),
         z: Math.round(cz + Math.sin(a) * r),
       });
     }

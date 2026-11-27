@@ -1,4 +1,4 @@
-// MERAPI AIRMAIL v3 — arcade flight model: pitch/roll/yaw, throttle, flaps,
+// MERAPI AIRMAIL v5 — arcade flight model: pitch/roll/yaw, throttle, flaps,
 // gear, stall and spin, wind gusts, terrain and sea collision, landing check.
 // v2 records every touchdown (vertical speed, centreline error, approach
 // speed) so the debrief can score the landing, and only counts a touchdown
@@ -8,12 +8,31 @@
 // the plane holds attitude hands-off; Delete resets it. The wind push only
 // applies in the air — a parked plane must not slide across the ground
 // (and drift sideways during the takeoff roll).
+// v5 fixes the takeoff that never worked. Two separate defects, both in
+// this file: the plane spawned 30 m before the FAR end of the runway,
+// rolling toward a steeply rising ridge with gate 1 ~170 degrees behind
+// it, so no full takeoff-to-landing run ever completed in the v3/v4 play
+// tests; and below flying speed the ground state flickered, because a dip
+// in bumpy terrain read as a takeoff and flagged a stall at taxi speed.
+// The spawn now sits at the threshold end (the convention the non-Merapi
+// spawn in main.js already uses), with the full 590 m of runway ahead,
+// and the plane is pinned to the ground below flying speed unless it is
+// actually climbing — a real rotation still leaves the ground.
 import { PLANE, WORLD, AIRFIELDS, TRIM_STEP, clamp, wrapAngle } from './config.js';
 import { terrainHeight } from './world.js';
 
 export function createFlightState() {
   return {
-    x: WORLD.runway.x, y: 8, z: WORLD.runway.z + WORLD.runway.length / 2 - 30,
+    // Spawn at the threshold end of the home runway (z = 480), heading +Z
+    // down the strip — the full 590 m of runway ahead, the same convention
+    // the Parangtritis spawn in main.js already uses (origin minus half the
+    // strip length, plus 30 m). The old spawn sat 30 m before the far end
+    // (z = 1040): the roll ran out of runway and onto the ridge rising
+    // north of the field before the plane could reach rotation speed,
+    // while gate 1 sat ~170 degrees behind the takeoff heading. From the
+    // new spawn gate 1 is 46 degrees off on the circuit and ~110 degrees
+    // off on the ring course, and the ridge is cleared on the climb-out.
+    x: WORLD.runway.x, y: 8, z: WORLD.runway.z - WORLD.runway.length / 2 + 30,
     heading: 0, pitch: 0, roll: 0,
     speed: 0, throttle: 0, flaps: 0, gearDown: true,
     fuel: 100, damage: 0, trim: 0,
@@ -151,6 +170,19 @@ export function stepFlight(s, input, dt, weather) {
     }
     s.onGround = true;
     // Rolling friction / braking.
+    s.speed = Math.max(0, s.speed - (input.brake ? 22 : 3) * dt);
+    if (s.speed < 8 && s.throttle < 0.1) s.speed = Math.max(0, s.speed - 6 * dt);
+  } else if (s.onGround && s.speed < stallSpeed * 1.05 && s.verticalSpeed <= 0.5) {
+    // Ground stickiness (v5): below flying speed and not climbing, a dip
+    // in bumpy terrain must not read as a takeoff. The old code let the
+    // plane flicker airborne over every dip during the roll, which flagged
+    // a stall at taxi speed and could turn a bump into hard-touchdown
+    // damage on the way back down. Pin it to the surface instead — the
+    // same friction applies as on the runway — and let a real rotation
+    // (positive lift at flying speed, verticalSpeed > 0.5) leave the
+    // ground the normal way, through the branch below.
+    s.y = ground + 1.2;
+    s.verticalSpeed = 0;
     s.speed = Math.max(0, s.speed - (input.brake ? 22 : 3) * dt);
     if (s.speed < 8 && s.throttle < 0.1) s.speed = Math.max(0, s.speed - 6 * dt);
   } else {
