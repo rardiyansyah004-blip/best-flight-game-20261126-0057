@@ -102,10 +102,9 @@
 // v5.8 (steeper final descent): the v5.7 run flew the latched final to
 // (-370, 61, 382) — on the centreline, descending — then drifted west
 // to (-554, 40, 689) and touched down on the TERRAIN west of the runway
-// with 45 damage, not on the runway. The plane hands off at ~175 m,
-// 122 m above the slope at the fix, and the final's 6 m/s descent cap
-// only closes on the slope at 3.3 m/s (the slope itself falls at 2.7
-// m/s) — in the 900 m to the touchdown it sheds just 56 m, so it
+// with 45 damage. The plane hands off at ~175 m, 122 m above the slope
+// at the fix, and the final's 6 m/s cap only closes on the slope at
+// 3.3 m/s — in the 900 m to the touchdown it sheds just 56 m, so it
 // arrives at the runway area still ~66 m high, flies past the touchdown
 // while descending, and drifts west into the hillside before it gets
 // down. The final's descent cap is now 9 m/s (the plane's max climb,
@@ -194,6 +193,27 @@
 // gain 0.08 and speed 52–58 m/s (proven: autoland PASS in v5.9, score
 // 1408). The moving lead point, the FAF join, the latch, and the flare
 // are shared — only the gain and speed band differ by mission.
+// v5.14 (join-speed reduction + mission-id fix): the v5.13 full flight
+// is MARGINAL on entry speed — run 14 PASSED entering the final at
+// 47 m/s, run 15 FAILED entering at 53 m/s (touched down fast at
+// ~50 m/s, bounced, stopped 28 m past the runway end, mission NOT
+// finished). The first v5.14 build (join 42–48 m/s) did NOT change the
+// entry speed at all — its probe latched at 52.3 m/s, and a branch probe
+// proved why: v5.13's mission test reads mission.id, but the runtime
+// mission state built by createMission has NO .id field — the def id
+// lives at mission.def.id — so isTakeoff was ALWAYS false and every
+// mission silently flew the fast final (gain 0.08, 52–58 m/s). Run 14's
+// PASS was the v5.12 global slow final; run 15's FAIL was the fast
+// final at 53 m/s in. The lookup is now mission.def.id, which restores
+// the intended split: the takeoff mission gets the slow final (gain
+// 0.15, 46–52 m/s, the v5.12-proven config) AND the slow join band
+// (42–48 m/s, forcing ~45 m/s into the final), while every other
+// mission keeps 48–56 m/s in the join and 0.08 / 52–58 m/s on the
+// final — exactly what they flew in v5.13, including the autoland
+// PASS. The stall speed is 28 m/s, so 42–48 is safe, and at lower
+// speed the turn radius shrinks, so the northbound leg sits closer to
+// the centreline. The autoland never enters the join (it starts
+// on-slope), so it is unaffected — the regression run proves it.
 import { AIRFIELDS, PLACES, WIND_FROM_DEG, clamp, wrapAngle } from './config.js';
 import { gateProgress } from './missions.js';
 
@@ -515,7 +535,27 @@ export function drawNavChart(canvas, flight, mission) {
  *  mission (including the airmail autoland at Parangtritis) reverts to
  *  gain 0.08 and speed 52–58 m/s (proven: autoland PASS in v5.9, score
  *  1408). The moving lead point, the FAF join, the latch, and the flare
- *  are shared — only the gain and speed band differ by mission. */
+ *  are shared — only the gain and speed band differ by mission.
+ *  v5.14: JOIN-SPEED REDUCTION + MISSION-ID FIX. Run 14 PASSED at
+ *  47 m/s into the final, run 15 FAILED at 53 m/s in — the join's
+ *  48–56 m/s band let the plane arrive at the fix fast, and the final
+ *  (46–52) could not shed the speed before the touchdown, so it
+ *  bounced and stopped 28 m past the runway end. The first v5.14 build
+ *  (join 42–48 m/s) did NOT change the entry speed — its probe latched
+ *  at 52.3 m/s, and a branch probe proved why: v5.13's mission test
+ *  reads mission.id, but the runtime mission state built by
+ *  createMission has NO .id field — the def id lives at mission.def.id
+ *  — so isTakeoff was ALWAYS false and every mission silently flew the
+ *  fast final (gain 0.08, 52–58 m/s). Run 14's PASS was the v5.12 global
+ *  slow final; run 15's FAIL was the fast final at 53 m/s in. The
+ *  lookup is now mission.def.id, which restores the intended split:
+ *  the takeoff mission gets the slow final (gain 0.15, 46–52 m/s, the
+ *  v5.12-proven config) AND the slow join band (42–48 m/s, forcing
+ *  ~45 m/s into the final), while every other mission keeps 48–56 m/s
+ *  in the join and 0.08 / 52–58 m/s on the final — exactly what they
+ *  flew in v5.13, including the autoland PASS. The autoland never
+ *  enters the join (it starts on-slope), so it is unaffected — the
+ *  regression run proves it. */
 export function autopilotInput(flight, mission) {
   if (flight.onGround) {
     return { pitch: 0, roll: 0, yaw: 0, throttleDelta: -1, brake: true, gearDown: true };
@@ -545,7 +585,16 @@ export function autopilotInput(flight, mission) {
     // speed in the flare, so it touched down at 35.9 m/s and rolled off
     // the short strip. The moving lead, FAF join, latch, and flare are
     // shared; only the gain and speed band differ by mission.
-    const isTakeoff = mission.id === 'takeoff';
+    // v5.14: the mission test MUST read mission.def.id, not mission.id.
+    // createMission builds the runtime state with NO .id field — the def
+    // id lives at mission.def.id — so mission.id is always undefined and
+    // the v5.13 split silently never engaged: every mission flew the fast
+    // final, and the first v5.14 join band (mission-specific on the same
+    // broken test) never engaged either — its probe latched at 52.3 m/s,
+    // the 48–56 band's speed. With the lookup fixed, the takeoff mission
+    // finally gets the slow final AND the slow join; other missions keep
+    // exactly what they flew in v5.13.
+    const isTakeoff = mission.def && mission.def.id === 'takeoff';
     const finalGain = isTakeoff ? 0.15 : 0.08;
     speedLo = isTakeoff ? 46 : 52; speedHi = isTakeoff ? 52 : 58;
     const slopeTan = Math.tan((3 * Math.PI) / 180);
@@ -590,12 +639,12 @@ export function autopilotInput(flight, mission) {
     // on the centreline.
     const atFix = distFAF < 400 && lat <= 300 && headErr < 1.0;
     // v5.7: LATCH the final. A per-frame handoff test flickers: the
-    // handoff is a sphere around the fix, and the plane leaves the
-    // sphere the moment it flies the final north — at (-293, 100, 80)
-    // it was 448 m from the fix, so the join re-engaged and turned it
-    // back. Once the handoff fires, the final stays engaged for the
-    // rest of this flight; a new flight state is created per mission,
-    // so the latch resets with the flight.
+    // handoff is a sphere around the fix, and the plane leaves the sphere
+    // the moment it flies the final north — at (-293, 100, 80) it was
+    // 448 m from the fix, so the join re-engaged and turned it back. Once
+    // the handoff fires, the final stays engaged for the rest of this
+    // flight; a new flight state is created per mission, so the latch
+    // resets with the flight.
     if (atFix) flight._apFinalLatched = true;
     if ((err > 25 || lat > 120) && !atFix && !flight._apFinalLatched) {
       // Too high for a direct final, or not lined up: join through the
@@ -631,7 +680,20 @@ export function autopilotInput(flight, mission) {
         ? clamp(slopeRate + 0.08 * fErr, 0.5, 9)
         : clamp(0.08 * fErr, -3, 3);
       const fPitch = clamp(-Math.atan2(fDescent, Math.max(flight.speed, 20)) / 0.45, -0.5, 0.35);
-      return { pitch: fPitch, roll: fRoll, yaw: 0, throttleDelta: flight.speed < 48 ? 1 : flight.speed > 56 ? -1 : 0, brake: false, gearDown: true };
+      // v5.14: the join speed band is mission-specific, like the final
+      // (v5.13) — and it only works now that the mission test reads
+      // mission.def.id (see above): the first v5.14 build kept the
+      // broken mission.id test, so the join stayed 48–56 and its probe
+      // latched at 52.3 m/s. The takeoff mission holds 42–48 m/s
+      // through the reversal, so it enters the final at ~45 m/s — run 15
+      // entered at 53 m/s, touched down fast and rolled off the runway
+      // end. Every other mission keeps the v5 band (48–56 m/s), the
+      // speed its finals were proven with, so the change touches only
+      // the mission that needs it. The autoland never enters the join
+      // at all (it starts on-slope).
+      const joinLo = isTakeoff ? 42 : 48;
+      const joinHi = isTakeoff ? 48 : 56;
+      return { pitch: fPitch, roll: fRoll, yaw: 0, throttleDelta: flight.speed < joinLo ? 1 : flight.speed > joinHi ? -1 : 0, brake: false, gearDown: true };
     }
     let descent;
     if (dist > 200) {
