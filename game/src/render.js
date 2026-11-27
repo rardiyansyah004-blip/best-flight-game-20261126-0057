@@ -22,10 +22,23 @@
 // autopilot fly the route from outside. Chase and cockpit are untouched;
 // the orbit is one new branch in updateScene plus one angle on the
 // renderer state, and it costs nothing per frame beyond the lookAt.
+// v5.17 (realistic graphics, clean-room from the techniques of
+// PhilCrowther/Aviation and PierreEVEN/ThreeFlightSimulator — never their
+// code): the gradient sky dome becomes an analytic Rayleigh/Mie sky — blue
+// scattering away from the sun, a warm forward-scatter halo hugging it,
+// haze below the horizon — baked once through a PMREM generator into the
+// scene environment so the PBR ocean and terrain carry real sky
+// reflections; the linear fog becomes FogExp2 (0.00036) for aerial
+// perspective; the sea shimmer now scrolls the wave normal map and drives
+// the ocean/terrain shader clocks. Flight model untouched.
+// v5.17 polish (from the first cover screenshot): the golden-hour sun
+// read as a soft glow with no defined orb, so the sky shader now draws
+// its own tight sun disc core under the sprite halo, and the golden
+// Mie strength is raised so the low sun carries further across the sky.
 import * as THREE from 'three';
 import { buildWorld, buildRings, ringPositions } from './world.js';
 import { buildAircraft, createPanelTexture, drawPanel, buildCockpitPanel } from './aircraft.js';
-import { WORLD } from './config.js';
+import { WORLD, REALISM } from './config.js';
 
 /** Radial-gradient glow texture (canvas): white core fading to transparent. */
 function makeGlowTexture() {
@@ -77,7 +90,9 @@ export function createRenderer() {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87b5d9);
-  scene.fog = new THREE.Fog(0xa8c8de, 900, 4200);
+  // v5.17: exponential fog for aerial perspective — distant island fades
+  // into haze instead of hitting a hard linear wall.
+  scene.fog = new THREE.FogExp2(0xa8c8de, REALISM.sky.fogDensity);
 
   const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 9000);
 
@@ -88,22 +103,76 @@ export function createRenderer() {
   const hemi = new THREE.HemisphereLight(0xbfd9ee, 0x3a5a3a, 0.7);
   scene.add(hemi);
 
-  // Sky dome: big gradient sphere (BackSide, vertex colours).
-  const skyGeo = new THREE.SphereGeometry(6000, 24, 16);
+  // Sky dome (v5.17): an analytic single-scatter Rayleigh/Mie sky — the
+  // same physics ThreeFlightSimulator ray-marches in its post-process,
+  // reduced to a closed-form dome shader so it costs one sphere in
+  // SwiftShader: blue (1 + cos^2) Rayleigh scattering away from the sun,
+  // a warm tint toward it, a tight Mie halo around the sun disc, a
+  // defined sun core under the sprite halo, and haze below the horizon.
+  // The view direction is measured from the camera, so the dome stays
+  // correct as the plane flies across the island.
+  const skyGeo = new THREE.SphereGeometry(REALISM.sky.domeRadius, 24, 16);
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     uniforms: {
-      top: { value: new THREE.Color(0x3a6ea8) },
-      mid: { value: new THREE.Color(0x9ec7e8) },
-      low: { value: new THREE.Color(0xffc98a) },
+      uSunDir: { value: new THREE.Vector3(1200, 900, 600).normalize() },
+      uSunColor: { value: new THREE.Color(0xfff2c8) },
+      uZenith: { value: new THREE.Color(0x2f6cb0) },
+      uHorizon: { value: new THREE.Color(0xbcd8ec) },
+      uGround: { value: new THREE.Color(0x5a6a72) },
+      uRayleigh: { value: REALISM.sky.rayleigh },
+      uMieG: { value: REALISM.sky.mieG },
+      uMieStrength: { value: REALISM.sky.mieStrength },
     },
-    vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-    fragmentShader: 'varying vec3 vP; uniform vec3 top; uniform vec3 mid; uniform vec3 low; void main(){ float h = normalize(vP).y; vec3 c = h > 0.12 ? mix(mid, top, smoothstep(0.12, 0.7, h)) : mix(low, mid, smoothstep(-0.08, 0.12, h)); gl_FragColor = vec4(c, 1.0); }',
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec3 vWorldPos;
+      uniform vec3 uSunDir; uniform vec3 uSunColor;
+      uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uGround;
+      uniform float uRayleigh; uniform float uMieG; uniform float uMieStrength;
+      void main() {
+        vec3 dir = normalize(vWorldPos - cameraPosition);
+        float sunAmt = max(dot(dir, uSunDir), 0.0);
+        float up = clamp(dir.y, -1.0, 1.0);
+        vec3 sky = mix(uHorizon, uZenith, pow(max(up, 0.0), 0.55));
+        float phase = 0.5 + 0.5 * sunAmt * sunAmt;
+        float horizonness = pow(1.0 - abs(up), 3.0);
+        vec3 rayCol = mix(vec3(0.35, 0.55, 0.95), vec3(1.0, 0.72, 0.42), pow(sunAmt, 3.0));
+        sky = mix(sky, rayCol, uRayleigh * (0.35 + 0.65 * phase) * (0.4 + 0.6 * horizonness));
+        float mie = pow(sunAmt, 180.0) * 1.4 + pow(sunAmt, 24.0) * 0.35;
+        sky += uSunColor * mie * uMieStrength;
+        sky += uSunColor * pow(sunAmt, 600.0) * 2.0;
+        if (up < 0.0) sky = mix(uHorizon, uGround, clamp(-up * 3.0, 0.0, 1.0));
+        gl_FragColor = vec4(sky, 1.0);
+      }`,
   });
   const sky = new THREE.Mesh(skyGeo, skyMat);
   sky.name = 'SkyDome';
-  scene.add(sky);
+
+  // v5.17: bake the sky into a PMREM environment map once at startup, so
+  // the PBR ocean and terrain carry real sky reflections — sun glint on
+  // the water, sheen on the canopy. The dome is rendered from the origin
+  // in a throwaway scene (far plane 20000, past the dome), then moved
+  // into the main scene. A failure here must never break the game.
+  let envReady = false;
+  try {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.add(sky);
+    const envRT = pmrem.fromScene(envScene, REALISM.sky.pmremBlur, 0.1, 20000);
+    scene.environment = envRT.texture;
+    scene.add(sky);
+    pmrem.dispose();
+    envReady = true;
+  } catch (e) {
+    if (!sky.parent) scene.add(sky);
+  }
 
   // Sun disc + halo: the v3 sky had a sun light but no visible sun, so the
   // golden hour read as a flat orange band. The sprites sit on the sun
@@ -179,6 +248,8 @@ export function createRenderer() {
   return {
     renderer, scene, camera, sun, hemi, sky, skyMat, world, rings, plane,
     panel, panelMesh, rain, sunSprite, haloSprite, trails, dust, dustState,
+    terrainMesh: world.group.getObjectByName('Terrain'),
+    envReady,
     // v4 camera feel state: spring velocity, smoothed look target + roll, FOV.
     camVel: new THREE.Vector3(),
     lookSmooth: new THREE.Vector3(),
@@ -190,14 +261,28 @@ export function createRenderer() {
   };
 }
 
-/** Sun/lighting preset: 'day' | 'golden' | 'night' | 'storm'. */
+/** Sun/lighting preset: 'day' | 'golden' | 'night' | 'storm'.
+ *  v5.17: each mode now retunes the Rayleigh/Mie sky uniforms, the fog
+ *  colour (which the FogExp2 couples to the horizon), and how strongly
+ *  the PBR ocean/terrain reflect the baked day environment — at night
+ *  the env map is dimmed hard, or the sea would glow like noon. */
 export function applyLighting(r, mode) {
   const u = r.skyMat.uniforms;
+  // Per-mode env reflection strength for the PBR surfaces.
+  const sea = r.world.sea ? r.world.sea.material : null;
+  const terra = r.terrainMesh ? r.terrainMesh.material : null;
+  const setEnv = (seaI, terraI) => {
+    if (sea) sea.envMapIntensity = seaI;
+    if (terra) terra.envMapIntensity = terraI;
+  };
   if (mode === 'golden') {
     r.sun.color.set(0xffb36b); r.sun.intensity = 1.5; r.sun.position.set(1600, 320, 900);
     r.hemi.intensity = 0.45;
-    u.top.value.set(0x2e4d7d); u.mid.value.set(0xe89a5e); u.low.value.set(0xff7a3c);
+    u.uZenith.value.set(0x2e4d7d); u.uHorizon.value.set(0xf0a35e); u.uGround.value.set(0x4a3428);
+    u.uSunColor.value.set(0xffb36b);
+    u.uRayleigh.value = 0.7; u.uMieG.value = 0.86; u.uMieStrength.value = 1.9;
     r.scene.fog.color.set(0xe8a06a); r.scene.background.set(0xe8a06a);
+    setEnv(0.9, 0.5);
     r.sunSprite.material.color.set(0xffc27a); r.sunSprite.material.opacity = 0.95;
     r.sunSprite.scale.set(520, 520, 1);
     r.haloSprite.material.color.set(0xff8a3c); r.haloSprite.material.opacity = 0.4;
@@ -205,8 +290,11 @@ export function applyLighting(r, mode) {
   } else if (mode === 'night') {
     r.sun.color.set(0x8fa8d8); r.sun.intensity = 0.25; r.sun.position.set(-800, 600, -400);
     r.hemi.intensity = 0.18;
-    u.top.value.set(0x060a18); u.mid.value.set(0x16233f); u.low.value.set(0x2a3550);
+    u.uZenith.value.set(0x060a18); u.uHorizon.value.set(0x1a2740); u.uGround.value.set(0x0a0f18);
+    u.uSunColor.value.set(0x8fa8d8);
+    u.uRayleigh.value = 0.25; u.uMieG.value = 0.8; u.uMieStrength.value = 0.35;
     r.scene.fog.color.set(0x101a2c); r.scene.background.set(0x101a2c);
+    setEnv(0.15, 0.1);
     // Night sun is the moon: pale, smaller, dimmer halo.
     r.sunSprite.material.color.set(0xdfe8ff); r.sunSprite.material.opacity = 0.55;
     r.sunSprite.scale.set(300, 300, 1);
@@ -215,8 +303,11 @@ export function applyLighting(r, mode) {
   } else if (mode === 'storm') {
     r.sun.color.set(0x9aa5b5); r.sun.intensity = 0.7; r.sun.position.set(400, 900, -600);
     r.hemi.intensity = 0.35;
-    u.top.value.set(0x2c3440); u.mid.value.set(0x5a6675); u.low.value.set(0x3a4450);
+    u.uZenith.value.set(0x2c3440); u.uHorizon.value.set(0x6a7683); u.uGround.value.set(0x3a4450);
+    u.uSunColor.value.set(0x9aa5b5);
+    u.uRayleigh.value = 0.3; u.uMieG.value = 0.8; u.uMieStrength.value = 0.5;
     r.scene.fog.color.set(0x5a6675); r.scene.background.set(0x5a6675);
+    setEnv(0.5, 0.3);
     r.sunSprite.material.color.set(0xcfd6de); r.sunSprite.material.opacity = 0.4;
     r.sunSprite.scale.set(420, 420, 1);
     r.haloSprite.material.color.set(0x9aa5b5); r.haloSprite.material.opacity = 0.18;
@@ -224,13 +315,18 @@ export function applyLighting(r, mode) {
   } else {
     r.sun.color.set(0xffe0b0); r.sun.intensity = 1.6; r.sun.position.set(1200, 900, 600);
     r.hemi.intensity = 0.7;
-    u.top.value.set(0x3a6ea8); u.mid.value.set(0x9ec7e8); u.low.value.set(0xffc98a);
+    u.uZenith.value.set(0x2f6cb0); u.uHorizon.value.set(0xbcd8ec); u.uGround.value.set(0x5a6a72);
+    u.uSunColor.value.set(0xfff2c8);
+    u.uRayleigh.value = REALISM.sky.rayleigh; u.uMieG.value = REALISM.sky.mieG; u.uMieStrength.value = REALISM.sky.mieStrength;
     r.scene.fog.color.set(0xa8c8de); r.scene.background.set(0xa8c8de);
+    setEnv(1.0, 0.6);
     r.sunSprite.material.color.set(0xfff2c8); r.sunSprite.material.opacity = 0.85;
     r.sunSprite.scale.set(460, 460, 1);
     r.haloSprite.material.color.set(0xffe9a8); r.haloSprite.material.opacity = 0.3;
     r.haloSprite.scale.set(1500, 1500, 1);
   }
+  // The sky shader's sun direction follows the light position.
+  u.uSunDir.value.copy(r.sun.position).normalize();
 }
 
 /** Move the ring meshes onto a mission's route gates. Extra rings hide. */
@@ -282,11 +378,17 @@ export function updateScene(r, flight, cameraMode, dt, time) {
       }
     });
   }
-  // Sea shimmer: scroll the streak texture and breathe the specular.
+  // Sea (v5.17): scroll the first wave normal map diagonally; the second
+  // map scrolls the opposite way inside the shader, driven by uOceanTime,
+  // which also animates the surf foam. The terrain ember clock rides
+  // alongside it.
   if (r.world.sea) {
     const m = r.world.sea.material;
-    if (m.map) { m.map.offset.x += dt * 0.006; m.map.offset.y += dt * 0.0025; }
-    m.shininess = 110 + Math.sin(time * 0.6) * 45;
+    if (m.normalMap) { m.normalMap.offset.x += dt * 0.008; m.normalMap.offset.y += dt * 0.005; }
+    if (m.userData.shader) m.userData.shader.uniforms.uOceanTime.value = time;
+  }
+  if (r.terrainMesh && r.terrainMesh.material.userData.shader) {
+    r.terrainMesh.material.userData.shader.uniforms.uTerraTime.value = time;
   }
   // Wingtip trails: feed the two wingtip positions while airborne and fast.
   updateTrails(r, flight, dt);

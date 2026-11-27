@@ -19,6 +19,19 @@
 // 250-390 m — outside the 30 m pass radius — forever. The gate now sits
 // at 172 m on the takeoff circuit (measured), the altitude the plane
 // actually reaches there, so the first pass goes through at ~17 m.
+// v5.17 (realistic graphics): the v5.16 golden-hour tweak was held — the
+// screenshots still read as 2D/animation. v5.17 rebuilds the look toward
+// AAA low-poly stylised-realistic / PBR semi-realism, clean-room from the
+// techniques of PhilCrowther/Aviation (ocean + sun lighting) and
+// PierreEVEN/ThreeFlightSimulator (procedural terrain + Rayleigh
+// scattering), never their code: Rayleigh/Mie sky + PMREM environment,
+// specular normal-mapped ocean with surf, triplanar volcanic terrain,
+// layered cloud deck, PBR airframe, articulated surfaces, tight shadows,
+// detailed runway, camera rig, volumetric trails. Flight model untouched.
+// v5.17 polish (from the first cover screenshot): the wave relief was
+// breaking the sun glint into a hard glitter, so the ocean normal scale
+// drops to 0.75; the haze was swallowing the volcano too early, so the
+// FogExp2 density drops to 0.00032 and the island reads a touch clearer.
 export const WORLD = {
   size: 4200,            // island spans -2100..2100 in x and z
   seaLevel: 0,
@@ -27,6 +40,49 @@ export const WORLD = {
   runway: { x: -420, z: 760, heading: 0, length: 620, width: 46 },
   strip2: { x: 1150, z: -1150, heading: 0.6, length: 420, width: 34 },
   startAlt: 120,
+};
+
+/** v5.17 realism tuning: one place for every visual constant the new
+ *  PBR/atmosphere/ocean/terrain work reads, so the look can be tuned
+ *  without hunting through shaders. */
+export const REALISM = {
+  sky: {
+    domeRadius: 6000,     // sky sphere radius (camera far is 9000)
+    rayleigh: 0.55,       // strength of the blue Rayleigh tint
+    mieG: 0.82,           // Mie forward-scatter lobe tightness
+    mieStrength: 1.0,     // sun-halo brightness multiplier
+    fogDensity: 0.00032,  // FogExp2 density (aerial perspective)
+    pmremBlur: 0.04,      // PMREM sigma for the environment map
+  },
+  ocean: {
+    metalness: 0.88,      // near-mirror water (sun glint via env + sun)
+    roughness: 0.09,      // low roughness = tight specular highlight
+    deepColor: 0x092338,  // deep open water
+    shallowColor: 0x186a73, // turquoise over the reef shelf
+    normalScale: 0.75,    // wave normal strength
+    normalRepeat: 24,     // wave texture tiles across the sea plane
+    shallowDepth: 4,      // water shallower than this turns turquoise
+    foamBand: 0.45,       // surf foam band half-width around the waterline
+  },
+  terrain: {
+    cliffSteep: 0.055,    // 1 - normal.y above this reads as cliff
+    cliffBlend: 0.11,     // full basalt above this steepness
+    canopyAlt: 340,       // gentle slopes below this get canopy greens
+    ashAlt: 400,          // upper cone above this gets sulfur ash
+    emberAlt: 430,        // caldera ember glow above this
+    craterRadius: 110,    // ember glow radius around the summit
+  },
+  shadow: {
+    mapSize: 1024,        // shadow map resolution (SwiftShader-safe)
+    frustum: 32,          // tight ortho half-extent around the plane (m)
+    bias: -0.0005,         // shadow acne offset
+    sunDistance: 800,     // sun light offset from the aircraft
+  },
+  clouds: {
+    count: 40,            // cloud clusters around the volcano
+    minY: 850, maxY: 1250, // deck altitude band (above the gate corridor)
+    minR: 350, maxR: 1300, // ring radius around the summit
+  },
 };
 
 /** Named airfields. Merapi Field is the home base; Parangtritis Strip is
