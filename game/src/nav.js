@@ -111,7 +111,7 @@
 // and the join's cap): it closes on the slope at 6.3 m/s and arrives
 // ~15 m above it at the touchdown, so the flare puts it down on the
 // runway instead of past it. The autoland is unaffected — it starts
-// on-slope and descends at ~3 m/s, far below either cap. The descent
+// on-slope and descends at ~3 m/s, far below the cap. The descent
 // worked (the plane reached (-393, 29, 462), on the centreline) — but
 // it still drifted west and touched down on the terrain (v5.9).
 // v5.9 (fixed lead point, too slow): the v5.8 run descended to (-393, 29,
@@ -555,7 +555,43 @@ export function drawNavChart(canvas, flight, mission) {
  *  in the join and 0.08 / 52–58 m/s on the final — exactly what they
  *  flew in v5.13, including the autoland PASS. The autoland never
  *  enters the join (it starts on-slope), so it is unaffected — the
- *  regression run proves it. */
+ *  regression run proves it.
+ *  v5.15: SETTLE PAST THE TOUCHDOWN. The v5.14 full flights are 1/3
+ *  PASS — not on entry speed (45.7/44.9/46.6 m/s, all inside the
+ *  42–48 band) but on the landing porpoise: the plane touches down
+ *  near the touchdown point, then leaves the ground again 6 more
+ *  times (z = 620/663/718/786/900/923 in the final probe) before it
+ *  sticks, and the two failing runs stop 19 m / 26 m past the runway
+ *  end. The mechanism is in flight.js: the ground stickiness only
+ *  pins the plane below flying speed (24 m/s stall x 1.05), so at
+ *  46 m/s every dip in the runway terrain reads as a takeoff; and
+ *  while airborne the flare law's descent has collapsed (past the
+ *  touchdown the distance grows, so the time-to-go grows and the
+ *  descent falls to the 0.5 m/s floor — the v5.11 issue) while the
+ *  autopilot even adds throttle to hold the 46–52 m/s approach band,
+ *  so each dip costs 20–45 m of runway with almost no braking. Once
+ *  the plane is past the touchdown point the final now HOLDS the
+ *  descent at 4 m/s and idles the throttle until it is on the ground
+ *  (the onGround early return at the top already idles + brakes
+ *  there): it comes back down firmly after each dip instead of
+ *  floating, and the speed bleeds fast enough to reach the
+ *  stickiness threshold with runway to spare. The first touchdown
+ *  is unchanged — the hold only engages past the touchdown point,
+ *  where the flare already commands 4–8 m/s — and the autoland gets
+ *  the same settle, though it touches down below the stickiness
+ *  speed anyway and sticks on first contact as before.
+ *  Probe 1 (gate-6 start, v515-finalprobe1.log, hold 3.0 m/s): the
+ *  settle works — 3 touchdowns (z = 561/598/629, vs v5.14's 7),
+ *  throttle idled to 0.00 within ~1 s of the first touchdown,
+ *  stopped at z = 667, 403 m short of the runway end (v5.14's probe
+ *  stopped at z = 946). But 2 bounces still cost ~70 m: after each
+ *  touchdown the pitch is zeroed and takes ~0.4 s (game) to
+ *  re-establish, so the effective descent over a short dip is only
+ *  about half the commanded value. The hold is therefore 4 m/s (was
+ *  3): later contacts at vs ~-3.5 m/s stay in the SMOOTH landing
+ *  band (<= 4) and airTime per dip stays under the hard-touchdown
+ *  thresholds (|vs| > 7), so it settles faster without risking
+ *  damage. The join band (42–48) and the orbit camera are untouched. */
 export function autopilotInput(flight, mission) {
   if (flight.onGround) {
     return { pitch: 0, roll: 0, yaw: 0, throttleDelta: -1, brake: true, gearDown: true };
@@ -563,6 +599,7 @@ export function autopilotInput(flight, mission) {
   const prog = gateProgress(mission);
   const next = mission.gates[prog.next];
   let tx, tz, speedLo, speedHi, final = false;
+  let pastTd = false; // v5.15: past the touchdown point — see the settle law below
   let pitch;
   if (next) {
     tx = next.x; tz = next.z;
@@ -695,6 +732,15 @@ export function autopilotInput(flight, mission) {
       const joinHi = isTakeoff ? 48 : 56;
       return { pitch: fPitch, roll: fRoll, yaw: 0, throttleDelta: flight.speed < joinLo ? 1 : flight.speed > joinHi ? -1 : 0, brake: false, gearDown: true };
     }
+    // v5.15: along-track position relative to the destination centre, in
+    // the runway-heading frame. The touchdown point sits at
+    // along = -length/2 + 100 (z = 550 at Merapi, 620 m strip; z = 550
+    // is where the v5.14 probe's first touchdown was 26 m past, at
+    // z = 576). Past it the plane is committed to the landing — the
+    // settle law below. (The moving-lead steering at the bottom of this
+    // branch reuses `along`.)
+    const along = (flight.x - d.x) * fx + (flight.z - d.z) * fz;
+    pastTd = along > -d.length / 2 + 100;
     let descent;
     if (dist > 200) {
       const targetAlt = 6 + dist * slopeTan;
@@ -703,6 +749,24 @@ export function autopilotInput(flight, mission) {
       const timeToTd = Math.max(dist / Math.max(flight.speed, 20), 0.5);
       descent = (flight.y - 6) / timeToTd;
     }
+    // v5.15: SETTLE PAST THE TOUCHDOWN — hold the descent up once the
+    // plane is past the touchdown point, until it is on the ground
+    // (the onGround early return at the top already idles + brakes
+    // there). Past the touchdown the flare law collapses: the distance
+    // to the touchdown point grows again, so the time-to-go grows and
+    // the descent falls to the 0.5 m/s floor (the v5.11 issue) — the
+    // final probe shows the plane then floating over every dip in the
+    // runway terrain instead of settling, 6 extra touchdowns before it
+    // sticks. Holding 4 m/s brings it back down firmly after each dip
+    // (touchdown vs ~-3.5 m/s: inside the SMOOTH landing band, and
+    // airTime per dip is under 0.4 s, so no hard-touchdown damage).
+    // Before the touchdown point this changes nothing — the flare
+    // already commands 4–8 m/s there. Probe 1 (hold 3.0 m/s) still
+    // left 2 bounces over ~70 m: after each touchdown the pitch is
+    // zeroed and takes ~0.4 s (game) to re-establish, so the effective
+    // descent over a short dip is only about half the commanded value
+    // — 4 m/s compensates for that lag without leaving the SMOOTH band.
+    if (pastTd) descent = Math.max(descent, 4.0);
     // v5.8: the final may now descend at up to 9 m/s (was 6). The plane
     // hands off ~122 m above the slope at the fix, and at 6 m/s it only
     // closes on the slope at 3.3 m/s — it arrives at the runway area
@@ -729,7 +793,6 @@ export function autopilotInput(flight, mission) {
     // touchdown itself (v5.8) overshot because its lead was zero. The
     // descent (above) already used the distance to the touchdown, so the
     // flare is unchanged; only the steering target moves.
-    const along = (flight.x - d.x) * fx + (flight.z - d.z) * fz;
     tx = d.x + fx * (along + 250);
     tz = d.z + fz * (along + 250);
   }
@@ -737,7 +800,17 @@ export function autopilotInput(flight, mission) {
   const want = Math.atan2(dx, dz);
   const dh = wrapAngle(want - flight.heading);
   const roll = clamp(dh * 1.4, -0.55, 0.55);
-  const throttleDelta = flight.speed < speedLo ? 1 : flight.speed > speedHi ? -1 : 0;
+  // v5.15: past the touchdown point, idle the throttle — the landing is
+  // committed, and holding the 46–52 m/s approach band while bouncing
+  // down the runway only fights the stop (the final probe shows the
+  // throttle hovering at ~0.3 through the whole porpoise, because the
+  // ground intervals cut it and the airborne intervals add it back).
+  // Idling bleeds the speed toward the ~25 m/s stickiness threshold,
+  // where the ground pin takes over and the brake finishes the job.
+  // Before the touchdown point the band still applies, so the approach
+  // speed is untouched; on the gate legs pastTd is false, so nothing
+  // changes there either.
+  const throttleDelta = pastTd ? -1 : (flight.speed < speedLo ? 1 : flight.speed > speedHi ? -1 : 0);
   return { pitch, roll, yaw: 0, throttleDelta, brake: false, gearDown: final };
 }
 
