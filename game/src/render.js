@@ -47,6 +47,18 @@
 // position itself is now plane-relative every frame. The ailerons keep
 // a steady-bank term (roll * 0.3) on top of the rate term, so a held
 // turn still shows a deflected surface in a still screenshot.
+// v5.17 Tier 3 (camera rig + trails): the orbit camera is replaced by
+// two cinematic modes — Wingtip (a rigid mount outboard of the right
+// wingtip, low and aft, looking forward past the riveted wing and the
+// canopy at the ocean and the volcano — a three-quarter low-angle
+// chase, the cover-shot framing) and Fly-By (a side station that
+// glides alongside the plane and holds it in three-quarter profile).
+// C cycles chase -> cockpit -> wingtip -> flyby, and 1-4 jump straight
+// to a mode. The wingtip trails stop being one-pixel lines: each is
+// now a 40-segment ribbon (a visible strip, 1.2 m wide, built from
+// the ring buffer of past wingtip positions and their lateral axes)
+// whose alpha fades with age and whose opacity grows with bank and
+// pitch — the harder the turn, the more the trail reads.
 import * as THREE from 'three';
 import { buildWorld, buildRings, ringPositions } from './world.js';
 import { buildAircraft, createPanelTexture, drawPanel, buildCockpitPanel } from './aircraft.js';
@@ -68,29 +80,45 @@ function makeGlowTexture() {
   return tex;
 }
 
-const TRAIL_N = 36;
+const TRAIL_N = 40;
 const DUST_N = 48;
 
-/** A fading wingtip trail: a line whose head is the wingtip, tail fades out. */
+/** A volumetric wingtip trail: a ribbon, not a line. Each of the 40
+ *  segments stores the wingtip position it was recorded at plus the
+ *  plane's lateral axis there, so the strip twists with the bank; the
+ *  two vertices of a segment sit +/-0.6 m along that axis (a 1.2 m
+ *  strip — wide enough to read at a distance, narrow enough to stay
+ *  a trail and not a banner). Colour fades to black along the ribbon
+ *  (additive blending reads black as transparent), so the tail
+ *  dissolves instead of ending in a hard cut. The mesh is
+ *  double-sided and never frustum-culled — a trail that leaves the
+ *  frame must not pop out of existence mid-turn. */
 function makeTrail(scene, glowTex) {
   const geo = new THREE.BufferGeometry();
-  const pos = new Float32Array(TRAIL_N * 3);
-  const col = new Float32Array(TRAIL_N * 3);
-  for (let i = 0; i < TRAIL_N; i++) {
-    const f = 1 - i / (TRAIL_N - 1);
-    col[i * 3] = 0.85 * f; col[i * 3 + 1] = 0.85 * f; col[i * 3 + 2] = 0.8 * f;
+  const pos = new Float32Array(TRAIL_N * 2 * 3);
+  const col = new Float32Array(TRAIL_N * 2 * 3);
+  const idx = [];
+  for (let i = 0; i < TRAIL_N - 1; i++) {
+    const a = i * 2, b = i * 2 + 1, c2 = i * 2 + 2, d = i * 2 + 3;
+    idx.push(a, b, c2, b, d, c2);
   }
+  geo.setIndex(idx);
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const mat = new THREE.LineBasicMaterial({
+  const mat = new THREE.MeshBasicMaterial({
     vertexColors: true, transparent: true, opacity: 0.8,
-    blending: THREE.AdditiveBlending, depthWrite: false,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const line = new THREE.Line(geo, mat);
-  line.frustumCulled = false;
-  line.visible = false;
-  scene.add(line);
-  return { line, pos, active: false };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  scene.add(mesh);
+  return {
+    mesh, mat,
+    pos: new Float32Array(TRAIL_N * 3),   // past wingtip positions, newest first
+    lat: new Float32Array(TRAIL_N * 3),   // lateral axis at each recorded point
+    active: false,
+  };
 }
 
 export function createRenderer() {
@@ -233,7 +261,7 @@ export function createRenderer() {
   if (terrainMesh) terrainMesh.receiveShadow = true;
   plane.traverse((o) => { if (o.isMesh) o.receiveShadow = true; });
 
-  // Wingtip trails: one line per wingtip, fed by the plane's motion.
+  // Wingtip trails: one ribbon per wingtip, fed by the plane's motion.
   const trails = [makeTrail(scene, glowTex), makeTrail(scene, glowTex)];
 
   // Takeoff dust: a small Points cloud kicked up by the wheels on the
@@ -295,8 +323,6 @@ export function createRenderer() {
     lookInit: false,
     rollSmooth: 0,
     fovSmooth: 62,
-    // v5 orbit camera state: the angle the free camera sits at around the plane.
-    orbitAngle: 0,
   };
 }
 
@@ -526,29 +552,57 @@ export function updateScene(r, flight, cameraMode, dt, time) {
     r.panelMesh.rotation.x = -0.35 + flight.pitch;
     r.panelMesh.rotation.z = -flight.roll;
     plane.visible = false;
-  } else if (cameraMode === 'orbit') {
-    // v5 orbit camera (GeoFS free/orbit view, C cycles to it): the camera
-    // slowly circles the plane at a fixed distance and height, always
-    // looking at the aircraft — the view for admiring the aircraft and the
-    // island from outside, and for seeing the autopilot fly the route.
-    // The plane stays visible and the cockpit panel stays hidden, like the
-    // chase view. The angle advances with the frame delta (game time, not
-    // wall time), so a paused game holds its frame and the staged shots —
-    // which never use this mode — are unaffected. One full circle takes
-    // about 52 seconds at 0.12 rad/s.
+  } else if (cameraMode === 'wingtip') {
+    // v5.17 Tier 3 — wingtip camera: a rigid mount outboard of the
+    // right wingtip, low and behind it, looking forward past the
+    // riveted wing and the canopy at the ocean and the volcano. The
+    // mount is fixed to the airframe, so the horizon banks with the
+    // plane (0.8 of the roll — the full roll reads as a tumble in a
+    // still frame). Wider FOV so the wing, the canopy and the summit
+    // all fit. This is the cover shot framing. (First version sat
+    // 1.7 m off the tip and the green nav light filled the frame while
+    // the fuselage fell out of it — the mount now stands 9 m out and
+    // 7 m aft, a three-quarter low-angle chase, so the wing is a
+    // diagonal, the canopy is in frame, and the gate stays ahead.)
     plane.visible = true;
     r.panelMesh.visible = false;
-    r.orbitAngle += dt * 0.12;
-    const R = 55, H = 16;
-    r.camera.position.set(
-      flight.x + Math.sin(r.orbitAngle) * R,
-      flight.y + H,
-      flight.z + Math.cos(r.orbitAngle) * R,
-    );
+    const off = new THREE.Vector3(9, 1.2, -7).applyEuler(plane.rotation);
+    r.camera.position.copy(plane.position).add(off);
+    const look = new THREE.Vector3(-1, 1.2, 35).applyEuler(plane.rotation).add(plane.position);
     r.camera.up.copy(up);
-    r.camera.lookAt(flight.x, flight.y + 1, flight.z);
+    r.camera.lookAt(look);
+    r.camera.rotation.z += flight.roll * 0.8;
     r.lookInit = false;
-    // Orbit holds the base FOV, like the cockpit.
+    r.fovSmooth += (68 - r.fovSmooth) * Math.min(1, dt * 3);
+    if (Math.abs(r.camera.fov - r.fovSmooth) > 0.01) {
+      r.camera.fov = r.fovSmooth;
+      r.camera.updateProjectionMatrix();
+    }
+  } else if (cameraMode === 'flyby') {
+    // v5.17 Tier 3 — fly-by camera: a side station that glides
+    // alongside the plane and holds it in three-quarter profile, the
+    // island behind it. The station is fixed in world space (right of
+    // the flight path, slightly ahead and above), and the camera lerps
+    // to it so the view sweeps smoothly instead of snapping. Unlike
+    // the old orbit camera it does not circle — it flies formation.
+    plane.visible = true;
+    r.panelMesh.visible = false;
+    const rx = Math.cos(flight.heading), rz = -Math.sin(flight.heading);
+    const desired = new THREE.Vector3(
+      flight.x + rx * 45 + fx * 12,
+      flight.y + 8,
+      flight.z + rz * 45 + fz * 12);
+    if (r.camera.position.distanceTo(desired) > 80) {
+      r.camera.position.copy(desired);
+      r.lookInit = false;
+    } else {
+      r.camera.position.lerp(desired, Math.min(1, dt * 2));
+    }
+    r.camera.up.copy(up);
+    const look = new THREE.Vector3(flight.x + fx * 15, flight.y + 1, flight.z + fz * 15);
+    if (!r.lookInit) { r.lookSmooth.copy(look); r.lookInit = true; }
+    r.lookSmooth.lerp(look, Math.min(1, dt * 6));
+    r.camera.lookAt(r.lookSmooth);
     r.fovSmooth += (62 - r.fovSmooth) * Math.min(1, dt * 3);
     if (Math.abs(r.camera.fov - r.fovSmooth) > 0.01) {
       r.camera.fov = r.fovSmooth;
@@ -603,30 +657,51 @@ export function updateScene(r, flight, cameraMode, dt, time) {
   }
 }
 
-/** Feed the wingtip trails from the plane's motion. */
+/** Feed the wingtip trail ribbons from the plane's motion. */
 function updateTrails(r, flight, dt) {
+  // The harder the plane is working (bank + pitch), the more the trail
+  // reads: a gentle cruise leaves a whisper, a hard turn leaves a banner.
+  const load = Math.min(1, Math.abs(flight.roll) * 1.4 + Math.abs(flight.pitch) * 0.8);
   const active = !flight.onGround && flight.speed > 25;
   r.trails.forEach((t, side) => {
     if (!active) {
-      t.line.visible = false;
+      t.mesh.visible = false;
       t.active = false;
       return;
     }
+    const tip = wingtipPos(r.plane, side);
+    const lat = new THREE.Vector3(1, 0, 0).applyEuler(r.plane.rotation);
     if (!t.active) {
-      // (Re)activate: collapse the whole trail onto the wingtip so it
+      // (Re)activate: collapse the whole ribbon onto the wingtip so it
       // grows out cleanly instead of streaking across the island.
-      const tip = wingtipPos(r.plane, side);
       for (let i = 0; i < TRAIL_N; i++) {
         t.pos[i * 3] = tip.x; t.pos[i * 3 + 1] = tip.y; t.pos[i * 3 + 2] = tip.z;
+        t.lat[i * 3] = lat.x; t.lat[i * 3 + 1] = lat.y; t.lat[i * 3 + 2] = lat.z;
       }
       t.active = true;
-      t.line.visible = true;
+      t.mesh.visible = true;
     }
-    // Shift the trail back one slot and write the new tip at the head.
+    // Shift the ring buffer back one slot and write the new tip at the head.
     t.pos.copyWithin(3, 0, (TRAIL_N - 1) * 3);
-    const tip = wingtipPos(r.plane, side);
+    t.lat.copyWithin(3, 0, (TRAIL_N - 1) * 3);
     t.pos[0] = tip.x; t.pos[1] = tip.y; t.pos[2] = tip.z;
-    t.line.geometry.attributes.position.needsUpdate = true;
+    t.lat[0] = lat.x; t.lat[1] = lat.y; t.lat[2] = lat.z;
+    // Rebuild the ribbon: each segment is a quad across the lateral axis.
+    const gp = t.mesh.geometry.attributes.position;
+    const gc = t.mesh.geometry.attributes.color;
+    for (let i = 0; i < TRAIL_N; i++) {
+      const f = 1 - i / (TRAIL_N - 1);
+      const px = t.pos[i * 3], py = t.pos[i * 3 + 1], pz = t.pos[i * 3 + 2];
+      const lx = t.lat[i * 3] * 0.6, ly = t.lat[i * 3 + 1] * 0.6, lz = t.lat[i * 3 + 2] * 0.6;
+      gp.setXYZ(i * 2, px - lx, py - ly, pz - lz);
+      gp.setXYZ(i * 2 + 1, px + lx, py + ly, pz + lz);
+      // Fade to black along the ribbon (additive blending = transparent).
+      gc.setXYZ(i * 2, 0.85 * f, 0.85 * f, 0.8 * f);
+      gc.setXYZ(i * 2 + 1, 0.85 * f, 0.85 * f, 0.8 * f);
+    }
+    gp.needsUpdate = true;
+    gc.needsUpdate = true;
+    t.mat.opacity = 0.3 + load * 0.65;
   });
 }
 

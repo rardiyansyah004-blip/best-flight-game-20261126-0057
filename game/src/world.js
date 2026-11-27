@@ -45,6 +45,25 @@
 // normal back toward the geometric normal on gentle low ground; the
 // canopy mix is lowered so the v4 farmland patchwork shows through
 // again, and the rock relief is softened and tiled finer.
+// v5.17 Tier 3 (runway detail): the flat dark runway strips become
+// weathered asphalt — a procedural 1024x512 canvas texture per strip
+// (noise + patches, edge lines, dashed centreline, threshold piano
+// keys, touchdown-zone bars, rubber tyre marks, painted runway
+// numbers), on a PBR standard material that receives the aircraft's
+// shadow; the PAPI lamps stand on short stanchions instead of
+// floating, and a row of approach lights leads into each threshold.
+// The separate centreline dash meshes are gone — the texture carries
+// them now, so the strip is one mesh instead of a dozen. Heights,
+// headings and the flight physics are untouched.
+// v5.17 Tier 3 fix (found while verifying the runway): the strip mesh
+// was never actually on the runway — the old code set only its y, so
+// it sat at the world origin (buried under the island centre), and
+// its rotation.z = heading put its length perpendicular to the strip.
+// The strip now sits at (def.x, def.z) with rotation.z = heading -
+// PI/2, which the three.js Euler order maps to the runway direction
+// (verified numerically against the vendored three.js). The tyre-mark
+// gradient also runs the right way at both ends now: darkest at each
+// threshold, fading toward the centre.
 import * as THREE from 'three';
 import { WORLD, PAPI, REALISM, mulberry32, clamp } from './config.js';
 
@@ -472,6 +491,121 @@ const OCEAN_COLOR_GLSL = `
 }
 `;
 
+/** v5.17 Tier 3: weathered asphalt runway texture, drawn once per strip.
+ *  Canvas 1024 (U, along the runway) x 512 (V, across it); each strip
+ *  gets its own texture so the markings land in real metres. The strip's
+ *  U axis runs along (sin heading, cos heading), so canvas-left is the
+ *  approach threshold for a landing on the strip's own heading, and the
+ *  painted numbers read from the approaching aircraft (top of the digits
+ *  toward +U). Contents: asphalt base with speckle + weathering patches,
+ *  solid edge lines, dashed centreline, threshold piano keys at both
+ *  ends, touchdown-zone bar pairs, dark rubber tyre marks where the
+ *  wheels bite, and the runway numbers at each threshold. */
+function makeRunwayTexture(def, numNear, numFar) {
+  const W = 1024, H = 512;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  const trng = mulberry32(20261128 + def.length);
+  const pxU = W / def.length;   // px per metre along the runway
+  const pxV = H / def.width;    // px per metre across it
+  const X = (m) => (m + def.length / 2) * pxU;   // metres-from-centre -> px (U)
+  const Y = (m) => (m + def.width / 2) * pxV;    // metres-across -> px (V)
+  // Asphalt base.
+  ctx.fillStyle = '#2b2f36';
+  ctx.fillRect(0, 0, W, H);
+  // Weathering: large soft patches, lighter and darker.
+  for (let i = 0; i < 26; i++) {
+    const x = trng() * W, y = trng() * H, r = 30 + trng() * 110;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const light = trng() > 0.5;
+    g.addColorStop(0, light ? 'rgba(120,128,138,0.10)' : 'rgba(10,12,16,0.12)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // Speckle: fine aggregate noise.
+  for (let i = 0; i < 9000; i++) {
+    const v = trng();
+    ctx.fillStyle = v > 0.66 ? 'rgba(200,205,210,0.10)' : v > 0.33 ? 'rgba(0,0,0,0.16)' : 'rgba(90,95,105,0.12)';
+    ctx.fillRect(trng() * W, trng() * H, 1 + trng() * 2, 1 + trng() * 2);
+  }
+  // Rubber tyre marks: two dark bands where the wheels touch down, just
+  // past each threshold, fading along the roll.
+  for (const side of [-1, 1]) {
+    for (const end of [0, 1]) {
+      const x0 = end === 0 ? X(-def.length / 2 + 60) : X(def.length / 2 - 260);
+      const x1 = end === 0 ? X(-def.length / 2 + 260) : X(def.length / 2 - 60);
+      const y = Y(side * 2.2);
+      // Darkest at the threshold, fading toward the centre — the far
+      // end's gradient runs the other way, so its rubber also heaps
+      // up at its own threshold.
+      const g = end === 0
+        ? ctx.createLinearGradient(x0, 0, x1, 0)
+        : ctx.createLinearGradient(x1, 0, x0, 0);
+      g.addColorStop(0, 'rgba(12,12,14,0.55)');
+      g.addColorStop(0.7, 'rgba(12,12,14,0.35)');
+      g.addColorStop(1, 'rgba(12,12,14,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(Math.min(x0, x1), y - 3 * pxV, Math.abs(x1 - x0), 6 * pxV);
+    }
+  }
+  // Edge lines: solid white, 0.5 m wide, inset 1.5 m from each edge.
+  ctx.fillStyle = 'rgba(245,245,240,0.92)';
+  ctx.fillRect(0, Y(-def.width / 2 + 1.5), W, 0.5 * pxV);
+  ctx.fillRect(0, Y(def.width / 2 - 2), W, 0.5 * pxV);
+  // Centreline: dashed white, 26 m dashes with 34 m gaps (matches the
+  // old separate dash meshes, now painted so the strip is one mesh).
+  ctx.fillStyle = 'rgba(245,245,240,0.95)';
+  for (let d = -def.length / 2 + 40; d < def.length / 2 - 20; d += 60) {
+    ctx.fillRect(X(d), Y(-1.5), 26 * pxU, 3 * pxV);
+  }
+  // Threshold piano keys: 8 white bars across the width at each end.
+  const keyW = 3 * pxU; // bar length along the runway
+  const keyH = 1.8 * pxV;
+  const gapV = (def.width - 2 * 2 - 8 * 1.8) / 7;
+  for (const end of [0, 1]) {
+    const x0 = end === 0 ? X(-def.length / 2 + 6) : X(def.length / 2 - 6 - 3);
+    for (let k = 0; k < 8; k++) {
+      const y0 = Y(-def.width / 2 + 2 + k * (1.8 + gapV));
+      ctx.fillRect(x0, y0, keyW, keyH);
+    }
+  }
+  // Touchdown-zone bars: pairs of white bars flanking the centreline at
+  // 150 m and 300 m past each threshold.
+  for (const end of [0, 1]) {
+    for (const dist of [150, 300]) {
+      const along = end === 0 ? -def.length / 2 + dist : def.length / 2 - dist;
+      const x0 = X(along - 11);
+      for (const side of [-1, 1]) {
+        const y0 = Y(side * 6.5 - 1.5);
+        ctx.fillRect(x0, y0, 22 * pxU, 3 * pxV);
+      }
+    }
+  }
+  // Runway numbers at each threshold, reading from the approaching
+  // aircraft: the near number's top points toward +U (canvas right),
+  // the far number's top points toward -U.
+  ctx.fillStyle = 'rgba(245,245,240,0.95)';
+  ctx.font = `bold ${Math.round(9 * pxV)}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.save();
+  ctx.translate(X(-def.length / 2 + 42), Y(0));
+  ctx.rotate(Math.PI / 2);
+  ctx.fillText(numNear, 0, 0);
+  ctx.restore();
+  ctx.save();
+  ctx.translate(X(def.length / 2 - 42), Y(0));
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(numFar, 0, 0);
+  ctx.restore();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
 export function buildWorld(scene) {
   const group = new THREE.Group();
   group.name = 'MerapiIsland';
@@ -553,25 +687,28 @@ export function buildWorld(scene) {
   sea.name = 'Sea';
   group.add(sea);
 
-  // --- Runways (dark strips with white centre line + threshold bars) ---
-  const runwayMat = new THREE.MeshLambertMaterial({ color: 0x2b2f36 });
-  const lineMat = new THREE.MeshBasicMaterial({ color: 0xf5f5f0 });
+  // --- Runways (v5.17 Tier 3: weathered asphalt texture, PBR strip that
+  // receives the aircraft's shadow, PAPI on stanchions, approach lights) ---
   const papi = {};
   function makeRunway(def, lit, fieldId) {
     const g = new THREE.Group();
-    const strip = new THREE.Mesh(new THREE.PlaneGeometry(def.length, def.width), runwayMat);
+    const nums = fieldId === 'merapi' ? ['09', '27'] : ['04', '22'];
+    const stripMat = new THREE.MeshStandardMaterial({
+      map: makeRunwayTexture(def, nums[0], nums[1]),
+      roughness: 0.85, metalness: 0.05,
+    });
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(def.length, def.width), stripMat);
     strip.rotation.x = -Math.PI / 2;
-    strip.rotation.z = def.heading;
-    strip.position.y = terrainHeight(def.x, def.z) + 0.4;
+    // Length along the runway: local +X must map to (sin heading, cos
+    // heading). With rotation.x = -90 deg, rotation.z = heading puts
+    // local +X at (cos heading, -sin heading) — perpendicular to the
+    // strip — so the strip sat sideways (and, at the world origin with
+    // only its y set, buried under the island). heading - PI/2 is the
+    // rotation that actually lines the strip up with the runway.
+    strip.rotation.z = def.heading - Math.PI / 2;
+    strip.position.set(def.x, terrainHeight(def.x, def.z) + 0.4, def.z);
+    strip.receiveShadow = true;
     g.add(strip);
-    for (let d = -def.length / 2 + 40; d < def.length / 2 - 20; d += 60) {
-      const dash = new THREE.Mesh(new THREE.PlaneGeometry(26, 3), lineMat);
-      dash.rotation.x = -Math.PI / 2;
-      dash.rotation.z = def.heading;
-      const dx = Math.sin(def.heading) * d, dz = Math.cos(def.heading) * d;
-      dash.position.set(def.x + dx, strip.position.y + 0.2, def.z + dz);
-      g.add(dash);
-    }
     if (lit) {
       // Edge lights: small emissive spheres along both edges.
       const lightGeo = new THREE.SphereGeometry(2.6, 6, 6);
@@ -588,8 +725,12 @@ export function buildWorld(scene) {
     }
     // PAPI: 4 lights in a row across the runway, left of the approach end,
     // just past the threshold — the glide-slope aid a real sim shows.
+    // Tier 3: each lamp stands on a short dark stanchion, so it reads as
+    // installed hardware instead of a floating box.
     const papiMeshes = [];
     const papiGeo = new THREE.BoxGeometry(5, 2.5, 3);
+    const postGeo = new THREE.BoxGeometry(0.9, 3.2, 0.9);
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x3a3f46, roughness: 0.8, metalness: 0.3 });
     for (let i = 0; i < 4; i++) {
       const mat = new THREE.MeshBasicMaterial({ color: 0xfff6d8 });
       const lamp = new THREE.Mesh(papiGeo, mat);
@@ -600,7 +741,29 @@ export function buildWorld(scene) {
       lamp.position.set(def.x + dx, strip.position.y + 1.6, def.z + dz);
       lamp.name = 'PAPI' + (i + 1);
       g.add(lamp);
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(def.x + dx, strip.position.y - 0.2, def.z + dz);
+      g.add(post);
       papiMeshes.push(lamp);
+    }
+    // Approach lights: a row of 5 emissive lamps on short posts, 60 m
+    // before the threshold, spanning the width — the lead-in a pilot
+    // follows onto the glide slope at night.
+    const appGeo = new THREE.SphereGeometry(1.8, 6, 6);
+    const appMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const appPostGeo = new THREE.CylinderGeometry(0.35, 0.35, 2.4, 6);
+    for (let i = -2; i <= 2; i++) {
+      const along = -def.length / 2 - 60;
+      const across = i * 9;
+      const dx = Math.sin(def.heading) * along + Math.cos(def.heading) * across;
+      const dz = Math.cos(def.heading) * along - Math.sin(def.heading) * across;
+      const post = new THREE.Mesh(appPostGeo, postMat);
+      post.position.set(def.x + dx, strip.position.y + 1.0, def.z + dz);
+      g.add(post);
+      const lamp = new THREE.Mesh(appGeo, appMat);
+      lamp.position.set(def.x + dx, strip.position.y + 2.4, def.z + dz);
+      lamp.name = 'ApproachLight';
+      g.add(lamp);
     }
     papi[fieldId] = papiMeshes;
     g.name = 'Runway';

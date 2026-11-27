@@ -14,6 +14,14 @@
 // autopilot joins the final through the final-approach fix when it is too
 // high for a direct glide path (nav.js), so a full takeoff-to-landing run
 // now completes instead of dying on the ridge past the runway.
+// v5.17 Tier 3 (camera rig): the orbit camera is replaced by two
+// cinematic modes — Wingtip (rigid mount outboard of the right wingtip,
+// the cover-shot framing) and Fly-By (a side station gliding in
+// formation). C cycles chase -> cockpit -> wingtip -> flyby, and the
+// number keys 1-4 jump straight to a mode. The mode name shows in the
+// mission-name bar (hud.js renders cameraMode + ' CAM') and the message
+// bar names it on every switch. Re-picking the mode already active is
+// a no-op, so holding a number key does not spam the message bar.
 import { WORLD, MISSIONS, AIRFIELDS } from './config.js';
 import { createFlightState, stepFlight, onRunway } from './flight.js';
 import { createMission, stepMission, weatherFor, loadPilotLog, savePilotLog, medalFor, recordFlight, gateProgress } from './missions.js';
@@ -65,15 +73,24 @@ function toggleNav() {
   if (game.navOpen) updateNavPanel(nav, game.flight, game.mission, game.weather, game.autopilot);
 }
 
-/** Cycle the camera (C): chase -> cockpit -> orbit -> chase. The orbit
- *  view is the v5 GeoFS-style free camera, circling the plane from
- *  outside. The mode also shows in the mission-name bar (hud.js renders
+/** The four camera modes, in cycle order. */
+const CAMERA_MODES = ['chase', 'cockpit', 'wingtip', 'flyby'];
+
+/** Pick a camera mode directly (number keys 1-4) and announce it. */
+function pickCamera(mode) {
+  if (!CAMERA_MODES.includes(mode)) return;
+  if (game.cameraMode === mode) return; // already there — don't re-announce
+  game.cameraMode = mode;
+  hud.message.textContent = game.cameraMode.toUpperCase() + ' CAMERA — C to change, 1-4 to pick';
+}
+
+/** Cycle the camera (C): chase -> cockpit -> wingtip -> flyby -> chase.
+ *  The mode also shows in the mission-name bar (hud.js renders
  *  cameraMode + ' CAM'), and the message bar names the new mode so the
  *  switch is visible even before the bar updates. */
 function cycleCamera() {
-  game.cameraMode = game.cameraMode === 'chase' ? 'cockpit'
-    : game.cameraMode === 'cockpit' ? 'orbit' : 'chase';
-  hud.message.textContent = game.cameraMode.toUpperCase() + ' CAMERA — C to change';
+  const i = CAMERA_MODES.indexOf(game.cameraMode);
+  pickCamera(CAMERA_MODES[(i + 1) % CAMERA_MODES.length]);
 }
 
 nav.apBtn.addEventListener('click', () => {
@@ -277,6 +294,10 @@ function loop(now) {
       }
     }
     if (input.consume('KeyC')) cycleCamera();
+    if (input.consume('Digit1')) pickCamera('chase');
+    if (input.consume('Digit2')) pickCamera('cockpit');
+    if (input.consume('Digit3')) pickCamera('wingtip');
+    if (input.consume('Digit4')) pickCamera('flyby');
     if (input.consume('KeyM')) audio.toggleMute();
     const events = stepFlight(game.flight, ctrl, dt, game.weather);
     stepMission(game.mission, game.flight, events, dt);

@@ -11,6 +11,14 @@
 // chart drawer open over the chase view with the autopilot engaged. (The
 // night scene still covers the cockpit-with-instruments-lit frame.) PAPI
 // lights now show on the night final.
+// v5.17 Tier 3: the cover shot moves to the wingtip camera — a rigid
+// mount just outboard of the right wingtip, low and aft, looking forward
+// past the riveted wing and the canopy at the sunlit ocean and the Merapi
+// summit, with the next gate dead ahead. The gate sits 220 m out (closer
+// than the old 260 m chase framing, so the ring reads larger from the
+// wingtip mount). The chase view is still used for the nav and rings
+// scenes (the gate stays dead-centre there), and the night scene still
+// uses the cockpit.
 import { WORLD, AIRFIELDS } from './config.js';
 import { createFlightState, stepFlight } from './flight.js';
 import { objectiveText } from './missions.js';
@@ -138,8 +146,15 @@ export function stageShot(name, game) {
     game.mission.message = 'Short final — lit runway 09, keep the glide slope.';
     return finishStage(game);
   }
-  // cover (default): golden hour, chase view, mail route Merapi -> Parangtritis.
-  // Next gate dead ahead with its distance label, destination strip beyond.
+  // cover (default): golden hour, wingtip camera, mail route Merapi -> Parangtritis.
+  // The mount sits just outboard of the right wingtip, low and aft,
+  // looking forward past the riveted wing and the canopy — the sunlit
+  // ocean and the Merapi summit ahead, the next gate dead ahead with
+  // its distance label, the destination strip beyond. The gate sits
+  // 220 m out (closer than the old 260 m chase framing, so the ring
+  // reads larger from the wingtip mount). The plane's slight roll
+  // (0.05) banks the horizon just enough to show the manoeuvre
+  // without hiding the gate.
   game.mission = game.newMission('airmail');
   game.mission.started = true;
   game.mission.step = 2;
@@ -149,12 +164,12 @@ export function stageShot(name, game) {
   game.mission.message = 'Gate 3 of 8 — mail run to Parangtritis Strip.';
   const gate = game.mission.gates[2];
   flight.x = gate.x - 200; flight.z = gate.z - 300;
-  lineUpOnGate(flight, gate, 260, 25);
+  lineUpOnGate(flight, gate, 220, 25);
   flight.speed = 64; flight.throttle = 0.85; flight.onGround = false;
-  game.setCameraMode('chase');
+  game.setCameraMode('wingtip');
   game.setWeather(golden);
   runSteps(flight, golden, 0.5, (f) => steerTo(f, gate.x, gate.y, gate.z, 64));
-  lineUpOnGate(flight, gate, 260, 25); // re-centre after the autopilot drift
+  lineUpOnGate(flight, gate, 220, 25); // re-centre after the autopilot drift
   flight.speed = 64; flight.pitch = 0.02; flight.roll = 0.05;
   return finishStage(game);
 }
@@ -163,10 +178,12 @@ export { createFlightState };
 
 /*
  * Framing notes (verified against the v2 HUD in headless Chromium):
- * - cover: gate 3 of the 8-gate Merapi -> Parangtritis mail route sits
- *   260 m dead ahead; the chase camera centres the plane and the gate,
- *   the approach panel names Parangtritis Strip RWY 04 beyond it, and the
- *   dials row + minimap + ATC box are all in frame at 1280x720.
+ * - cover (v5.17 Tier 3): wingtip camera, gate 3 of the 8-gate Merapi ->
+ *   Parangtritis mail route 220 m dead ahead; the riveted right wing and
+ *   the canopy fill the lower frame, the sunlit ocean and the Merapi
+ *   summit sit ahead, the approach panel names Parangtritis Strip RWY 04
+ *   beyond the gate, and the dials row + minimap + ATC box are all in
+ *   frame at 1280x720.
  * - nav (v3): same en-route framing as cover, with the nav chart drawer
  *   open on the right (island chart + METAR + AP ON) — the gate stays
  *   dead ahead in the left two-thirds of the frame.
