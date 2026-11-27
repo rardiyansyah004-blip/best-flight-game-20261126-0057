@@ -35,6 +35,18 @@
 // read as a soft glow with no defined orb, so the sky shader now draws
 // its own tight sun disc core under the sprite halo, and the golden
 // Mie strength is raised so the low sun carries further across the sky.
+// v5.17 Tier 2 (aircraft mechanical realism): the renderer drives the
+// plane's articulated surfaces — ailerons, flaps, elevator, rudder and
+// the retractable gear — from the flight state each frame (read-only,
+// the physics never sees them move), and the sun light becomes a tight
+// aircraft-centred shadow: PCFSoftShadowMap, a 1024 map over a +/-32 m
+// frustum that follows the plane, so the aircraft throws a crisp
+// shadow on the runway and the terrain instead of floating over it.
+// The sun direction is stored once per lighting mode (r.sunDir) and
+// reused by the sky shader and the sun sprites, because the light
+// position itself is now plane-relative every frame. The ailerons keep
+// a steady-bank term (roll * 0.3) on top of the rate term, so a held
+// turn still shows a deflected surface in a still screenshot.
 import * as THREE from 'three';
 import { buildWorld, buildRings, ringPositions } from './world.js';
 import { buildAircraft, createPanelTexture, drawPanel, buildCockpitPanel } from './aircraft.js';
@@ -86,7 +98,11 @@ export function createRenderer() {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.shadowMap.enabled = false;
+  // v5.17 Tier 2: tight aircraft-centred shadows. One 1024 map over a
+  // +/-32 m frustum is cheap in SwiftShader and keeps the aircraft
+  // grounded on the runway instead of floating over it.
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87b5d9);
@@ -100,6 +116,20 @@ export function createRenderer() {
   const sun = new THREE.DirectionalLight(0xffe0b0, 1.6);
   sun.position.set(1200, 900, 600);
   scene.add(sun);
+  // Shadow camera: tight ortho frustum around the aircraft, 1024 map.
+  // The light position and its target are re-aimed at the plane every
+  // frame in updateScene; the target must live in the scene graph for
+  // its matrix to update.
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(REALISM.shadow.mapSize, REALISM.shadow.mapSize);
+  sun.shadow.camera.left = -REALISM.shadow.frustum;
+  sun.shadow.camera.right = REALISM.shadow.frustum;
+  sun.shadow.camera.top = REALISM.shadow.frustum;
+  sun.shadow.camera.bottom = -REALISM.shadow.frustum;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 2000;
+  sun.shadow.bias = REALISM.shadow.bias;
+  scene.add(sun.target);
   const hemi = new THREE.HemisphereLight(0xbfd9ee, 0x3a5a3a, 0.7);
   scene.add(hemi);
 
@@ -197,6 +227,11 @@ export function createRenderer() {
   const rings = buildRings(scene, ringPositions());
   const plane = buildAircraft();
   scene.add(plane);
+  // Shadow receivers: the terrain (which carries the runway shelves)
+  // catches the aircraft's shadow, and the airframe catches its own.
+  const terrainMesh = world.group.getObjectByName('Terrain');
+  if (terrainMesh) terrainMesh.receiveShadow = true;
+  plane.traverse((o) => { if (o.isMesh) o.receiveShadow = true; });
 
   // Wingtip trails: one line per wingtip, fed by the plane's motion.
   const trails = [makeTrail(scene, glowTex), makeTrail(scene, glowTex)];
@@ -248,8 +283,12 @@ export function createRenderer() {
   return {
     renderer, scene, camera, sun, hemi, sky, skyMat, world, rings, plane,
     panel, panelMesh, rain, sunSprite, haloSprite, trails, dust, dustState,
-    terrainMesh: world.group.getObjectByName('Terrain'),
+    terrainMesh,
     envReady,
+    // The sun's direction (unit vector), set by applyLighting per mode.
+    // The light position itself goes plane-relative every frame, so the
+    // sky shader and the sun sprites read the direction from here.
+    sunDir: new THREE.Vector3(1200, 900, 600).normalize(),
     // v4 camera feel state: spring velocity, smoothed look target + roll, FOV.
     camVel: new THREE.Vector3(),
     lookSmooth: new THREE.Vector3(),
@@ -325,8 +364,11 @@ export function applyLighting(r, mode) {
     r.haloSprite.material.color.set(0xffe9a8); r.haloSprite.material.opacity = 0.3;
     r.haloSprite.scale.set(1500, 1500, 1);
   }
-  // The sky shader's sun direction follows the light position.
-  u.uSunDir.value.copy(r.sun.position).normalize();
+  // The sky shader's sun direction follows the light position — stored
+  // on r.sunDir, since the light position itself goes plane-relative
+  // every frame in updateScene.
+  r.sunDir.copy(r.sun.position).normalize();
+  u.uSunDir.value.copy(r.sunDir);
 }
 
 /** Move the ring meshes onto a mission's route gates. Extra rings hide. */
@@ -359,6 +401,62 @@ export function updateScene(r, flight, cameraMode, dt, time) {
   // Wingtip strobe blinks (nav lights stay steady).
   const strobe = plane.userData.strobe;
   if (strobe) strobe.visible = (time % 1.4) < 0.1;
+  // v5.17 Tier 2 — tight aircraft-centred shadow: the sun light and its
+  // shadow target track the plane, so the 1024 map always covers the
+  // +/-32 m around the aircraft at full resolution, wherever it flies.
+  r.sun.position.copy(plane.position).addScaledVector(r.sunDir, REALISM.shadow.sunDistance);
+  r.sun.target.position.copy(plane.position);
+  r.sun.target.updateMatrixWorld();
+  // v5.17 Tier 2 — articulated control surfaces, driven read-only from
+  // the flight state (the physics never sees them move). Rates are
+  // differenced per frame and smoothed, so the surfaces glide instead
+  // of snapping. Sign conventions (plane faces +Z, right wing +X):
+  // roll > 0 banks left (right wing rises), so the left aileron goes
+  // up; pitch > 0 is nose down, so the elevator goes up when the pitch
+  // rate is negative; heading increasing turns right, so the rudder's
+  // trailing edge swings right (negative rotation about Y).
+  const surf = plane.userData.surfaces;
+  if (surf) {
+    const prev = plane.userData.prevFlight || { roll: flight.roll, pitch: flight.pitch, heading: flight.heading };
+    const dtSafe = Math.max(dt, 1e-3);
+    const rollRate = (flight.roll - prev.roll) / dtSafe;
+    const pitchRate = (flight.pitch - prev.pitch) / dtSafe;
+    let dHdg = flight.heading - prev.heading;
+    dHdg = ((dHdg + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+    const yawRate = dHdg / dtSafe;
+    plane.userData.prevFlight = { roll: flight.roll, pitch: flight.pitch, heading: flight.heading };
+    const sm = plane.userData.surfSmooth || (plane.userData.surfSmooth = { ail: 0, elev: 0, rud: 0, flap: 0, gear: 0 });
+    const k = Math.min(1, dt * 6);
+    const clamp = (v, m) => Math.max(-m, Math.min(m, v));
+    // Ailerons: bank left -> left aileron up (+rotation.x), right down.
+    // The steady-bank term keeps a visible deflection while held in a
+    // turn (a pure rate term would centre the moment the roll stops),
+    // so the manoeuvre reads in a still screenshot, not just in motion.
+    const ailTarget = clamp(rollRate * 0.9 + flight.roll * 0.3, 0.314);
+    sm.ail += (ailTarget - sm.ail) * k;
+    surf.aileronL.rotation.x = sm.ail;
+    surf.aileronR.rotation.x = -sm.ail;
+    // Elevator: pitch up (negative pitch rate) -> trailing edge up.
+    const elevTarget = clamp(-pitchRate * 1.2 - flight.pitch * 0.3, 0.314);
+    sm.elev += (elevTarget - sm.elev) * k;
+    surf.elevator.rotation.x = sm.elev;
+    // Rudder: turn right (heading increasing) -> trailing edge right.
+    const rudTarget = clamp(-yawRate * 1.5, 0.3);
+    sm.rud += (rudTarget - sm.rud) * k;
+    surf.rudder.rotation.y = sm.rud;
+    // Flaps: deployed -> trailing edge down, eased in over ~1 s.
+    const flapTarget = flight.flaps ? -0.44 : 0;
+    sm.flap += (flapTarget - sm.flap) * Math.min(1, dt * 3);
+    surf.flapL.rotation.x = sm.flap;
+    surf.flapR.rotation.x = sm.flap;
+    // Gear: retracted only when the flight model says so AND airborne
+    // (on the ground the plane must sit on its wheels).
+    const gearTarget = (flight.gearDown || flight.onGround) ? 0 : -1.45;
+    sm.gear += (gearTarget - sm.gear) * Math.min(1, dt * 2);
+    surf.gearL.rotation.x = sm.gear;
+    surf.gearR.rotation.x = sm.gear;
+    surf.gearTail.rotation.x = sm.gear;
+  }
   // Clouds drift AND bob gently instead of sliding on rails.
   r.world.clouds.children.forEach((c, i) => {
     c.position.x += dt * (1.5 + (i % 3));
@@ -395,8 +493,9 @@ export function updateScene(r, flight, cameraMode, dt, time) {
   // Takeoff dust on the ground roll.
   updateDust(r, flight, dt);
 
-  // Sun disc + halo follow the camera on the sun direction.
-  const sunDir = new THREE.Vector3().copy(r.sun.position).normalize();
+  // Sun disc + halo follow the camera on the sun direction (r.sunDir —
+  // the light position itself is plane-relative since Tier 2).
+  const sunDir = r.sunDir;
   r.sunSprite.position.copy(r.camera.position).addScaledVector(sunDir, 4200);
   r.haloSprite.position.copy(r.sunSprite.position);
 
@@ -430,7 +529,7 @@ export function updateScene(r, flight, cameraMode, dt, time) {
   } else if (cameraMode === 'orbit') {
     // v5 orbit camera (GeoFS free/orbit view, C cycles to it): the camera
     // slowly circles the plane at a fixed distance and height, always
-    // looking at the aircraft — the view for watching the plane and the
+    // looking at the aircraft — the view for admiring the aircraft and the
     // island from outside, and for seeing the autopilot fly the route.
     // The plane stays visible and the cockpit panel stays hidden, like the
     // chase view. The angle advances with the frame delta (game time, not
